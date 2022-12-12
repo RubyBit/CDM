@@ -12,8 +12,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 import numpy as np
-git config --global user.email "you@example.com"
-git config --global user.name "Your Name"
+
 #https://github.com/g2archie/UNet-MRI-Reconstruction
 #https://amaarora.github.io/2020/09/13/unet.html#understanding-input-and-output-shapes-in-u-net
 # This implementation includes the added padding to prevent chnage of dimensions to produce image of same dimensions as input to reconstruct the image
