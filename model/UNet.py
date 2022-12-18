@@ -159,10 +159,12 @@ class ResNet(nn.Module):
             self.in_ch = self.num_filters
         return nn.Sequential(*layers)
 
-    def forward(self, x):
+    def forward(self, x, cond=None):
         for block in self.blocks:
             res = x
             x = block(x)
+            if cond is not None:
+                x += nn.Linear(cond.shape[1], x.shape[1], bias=False)(cond)
             if self.residual:
                 x = x + res
         return self.head(x)
@@ -181,11 +183,11 @@ class ScoreNet(nn.Module):
 
     def forward(self, x, t, conditioning):
         timestep = get_timestep_embedding(t, self.embedding_dim)
-        cond = torch.cat([t, conditioning], dim=1)
+        cond = torch.cat([timestep, conditioning], dim=1)
         cond = nn.SiLU()(nn.Linear(self.latent_dim, self.embedding_dim * 4)(cond))
         cond = nn.SiLU()(nn.Linear(self.embedding_dim * 4, self.embedding_dim * 4)(cond))
         cond = nn.Linear(self.embedding_dim * 4, self.embedding_dim)(cond)
 
         h = nn.Linear(self.latent_dim, self.embedding_dim)(x)
-        h = self.resnet(torch.cat([h, timestep, cond], dim=1))
+        h = self.resnet(h, cond)
         return x + h
