@@ -89,6 +89,12 @@ class AutoEncoder(nn.Module):  # autoencoder
 def autoencoder_loss(x, x_hat):
     return F.binary_cross_entropy(x_hat, x)  # For MNIST dataset (or log prob if we get distributions)
 
+# Latent loss
+def latent_loss(f):
+    var_1=sigma2(gamma(f))
+    mean1_sqr = (1.0 - var_1) * np.square(f)
+    loss_lat = 0.5 * np.sum(mean1_sqr + var_1 - np.log(var_1) - 1.0)
+    return loss_lat
 
 ############################################################################################################
 # Diffusion process functions
