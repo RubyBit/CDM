@@ -90,9 +90,9 @@ def autoencoder_loss(x, x_hat):
     return F.binary_cross_entropy(x_hat, x)  # For MNIST dataset (or log prob if we get distributions)
 
 # Latent loss
-def latent_loss(f):
-    var_1=sigma2(gamma(f))
-    mean1_sqr = (1.0 - var_1) * np.square(f)
+def latent_loss(x_hat):
+    var_1=sigma2(gamma(x_hat))
+    mean1_sqr = (1.0 - var_1) * np.square(x_hat)
     loss_lat = 0.5 * np.sum(mean1_sqr + var_1 - np.log(var_1) - 1.0)
     return loss_lat
 
@@ -123,7 +123,6 @@ def sigma2(gamma_x):
 
 def alpha(gamma_x):
     return np.sqrt(1 - sigma2(gamma_x))
-
 
 class ResNet(nn.Module):
     def __init__(self, in_ch, out_ch, num_blocks=4, num_layers=4, num_filters=64, kernel_size=3, stride=1, padding=1,
@@ -197,3 +196,59 @@ class ScoreNet(nn.Module):
         h = nn.Linear(self.latent_dim, self.embedding_dim)(x)
         h = self.resnet(h, cond)
         return x + h
+class VDM(nn.Module):
+    embedding_dim: int = 256
+    latent_dim: int= 572
+    def __call__(self, images, conditioning):
+        x = images
+        n_batch = images.shape[0]
+        cond = self.embedding_vectors(conditioning)
+
+        # Noise and reconstruct
+        #(reconstruction)
+        x_hat = self.Encoder(x, cond)
+        autoencoder_loss = self.autoencoder_loss(x, x_hat, cond)
+
+        # Latent loss
+        latent_loss = self.latent_loss(x_hat)
+    
+        ##########################################
+        #Needs to be finished
+        ##########################################
+        # Diffusion loss
+        timestep= time()
+        loss_diff = self.diffusion_loss(timestep, x_hat, cond) # to be done
+
+        # End of diffusion loss computation
+        return (loss_diff, latent_loss, autoencoder_loss)
+    ###########################
+    #Sampling time steps
+    ########################################
+    def time():
+
+        t=0
+        #
+        #TO BE DONE
+        #
+        return t
+    def sample():
+        z=0
+        #
+        #TO BE DONE
+        #
+        return z
+
+    ########################################
+    #Generating samples
+    ########################################
+    def generate_x(self, z_0,latent_dim=latent_dim,embedding_dim=embedding_dim):
+        g_0 =ScoreNet(latent_dim,embedding_dim)(0.0)
+
+        var_0 = nn.sigmoid(g_0)
+        z_0_rescaled = z_0 / np.sqrt(1. - var_0)
+
+        logits = self.encdec.decode(z_0_rescaled, g_0)
+
+        # get output samples
+
+
