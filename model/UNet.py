@@ -12,7 +12,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 import numpy as np
-import jax
 
 
 # https://github.com/g2archie/UNet-MRI-Reconstruction
@@ -127,8 +126,12 @@ def alpha(gamma_x):
 
 # Sample function
 def sample_step(self, rng, i, T, z_t, conditioning, guidance_weight=0.):
-    rng_body = jax.random.fold_in(rng, i)
-    eps = jax.random.normal(rng_body, z_t.shape)
+    # rng_body = jax.random.fold_in(rng, i)
+    # eps = jax.random.normal(rng_body, z_t.shape)
+    # returns Generator object that manages state and generates the random bits, 
+    # which are then transformed into random values from useful distributions
+    rng = np.random.default_rng(i)
+    eps = rng.standard_normal(z_t.shape)
     t = (T - i)/T 
     s = (T - i - 1) / T
 
