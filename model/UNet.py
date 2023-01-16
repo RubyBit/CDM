@@ -12,8 +12,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 import numpy as np
+from torchvision import transforms
 
 
+
+###############################
+#Autoencoder
+#################################
 # https://github.com/g2archie/UNet-MRI-Reconstruction
 # https://amaarora.github.io/2020/09/13/unet.html#understanding-input-and-output-shapes-in-u-net This implementation
 # includes the added padding to prevent change of dimensions to produce image of same dimensions as input to
@@ -196,51 +201,7 @@ class ScoreNet(nn.Module):
         h = nn.Linear(self.latent_dim, self.embedding_dim)(x)
         h = self.resnet(h, cond)
         return x + h
-class VDM(nn.Module):
-    embedding_dim: int = 256
-    latent_dim: int= 572
-    def __call__(self, images, conditioning):
-        x = images
-        n_batch = images.shape[0]
-        cond = self.embedding_vectors(conditioning)
 
-        # Noise and reconstruct
-        #(reconstruction)
-        x_hat = self.Encoder(x, cond)
-        autoencoder_loss = self.autoencoder_loss(x, x_hat, cond)
-
-        # Latent loss
-        latent_loss = self.latent_loss(x_hat)
-    
-        ##########################################
-        #Needs to be finished
-        ##########################################
-        # Diffusion loss
-        timestep= time()
-        loss_diff = self.diffusion_loss(timestep, x_hat, cond) # to be done
-
-        # End of diffusion loss computation
-        return (loss_diff, latent_loss, autoencoder_loss)
-    ###########################
-    #Sampling time steps
-    ########################################
-    def time():
-
-        t=0
-        #
-        #TO BE DONE
-        #
-        return t
-    def sample():
-        z=0
-        #
-        #TO BE DONE
-        #
-        return z
-
-    ########################################
-    #Generating samples
-    ########################################
     def generate_x(self, z_0,latent_dim=latent_dim,embedding_dim=embedding_dim):
         g_0 =ScoreNet(latent_dim,embedding_dim)(0.0)
 
@@ -250,5 +211,82 @@ class VDM(nn.Module):
         logits = self.encdec.decode(z_0_rescaled, g_0)
 
         # get output samples
+
+################################################
+
+#Shortcut for training the autoencoder (encoder and decoder are separate functions here)
+###############################################
+
+#https://nextjournal.com/gkoehler/pytorch-mnist
+def train(epoch, train_loader, optimizer, encoder, decoder):
+    train_losses = []
+    train_counter = []
+    loss_f= torch.nn.MSELoss()
+    encoder.train()
+    decoder.train()
+    for batch_idx, (data, target) in enumerate(train_loader):
+        optimizer.zero_grad()
+        encoded_data = encoder(data)
+        # Decode data
+        decoded_data = decoder(encoded_data)
+        loss = loss_f(decoded_data, data)
+        loss.backward()
+        optimizer.step()
+        if batch_idx % log_interval == 0:
+            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
+            epoch, batch_idx * len(data), len(train_loader.dataset),
+            100. * batch_idx / len(train_loader), loss.item()))
+            train_losses.append(loss.item())
+            train_counter.append(
+            (batch_idx*1000) + ((epoch-1)*len(train_loader.dataset)))
+def test(test_loader, encoder, decoder):
+    loss_f= torch.nn.MSELoss()
+    test_losses = []
+    encoder.eval()
+    decoder.eval()
+    test_loss = 0
+    with torch.no_grad():
+        for data, target in test_loader:
+            encoded_data = encoder(data)
+            # Decode data
+            output= decoder(encoded_data)
+            test_loss += loss_f(output,data).item()
+    test_loss /= len(test_loader.dataset)
+    test_losses.append(test_loss)
+    print('\nTest set: Avg. loss: {:.4f} \n'.format(
+        test_loss))
+
+def short_cut(n_epochs, batch_size_train,batch_size_test):
+    train_loader = torch.utils.data.DataLoader(
+    torchvision.datasets.MNIST('./', train=True, download=False,
+                                transform=torchvision.transforms.Compose([
+                                torchvision.transforms.ToTensor(),
+                                torchvision.transforms.Normalize(
+                                    (0.1307,), (0.3081,))
+                                ])),batch_size=batch_size_train, shuffle=True)
+
+    test_loader = torch.utils.data.DataLoader(
+    torchvision.datasets.MNIST('./', train=False, download=False,
+                                transform=torchvision.transforms.Compose([
+                                torchvision.transforms.ToTensor(),
+                                torchvision.transforms.Normalize(
+                                    (0.1307,), (0.3081,))
+                                ])),batch_size=batch_size_test, shuffle=True)
+
+    encoder=Encoder(num_input_channels=1, base_channel_size=32, latent_dim=256)
+    decoder=Decoder(num_input_channels=1, base_channel_size=32, latent_dim=256)
+    mean = (0.1307, )
+    std = (0.3081, ) 
+    learning_rate = 0.01
+
+    params_to_optimize = [
+        {'params': encoder.parameters()},
+        {'params': decoder.parameters()}
+    ]
+    optimizer = torch.optim.Adam(params_to_optimize,lr=learning_rate)
+
+    for epoch in range(1, n_epochs + 1):
+        train(epoch=epoch, train_loader=train_loader, optimizer=optimizer, encoder=encoder,decoder=decoder)
+        test(train_loader=train_loader, encoder=encoder,decoder=decoder)
 
 
