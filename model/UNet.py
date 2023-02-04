@@ -89,12 +89,14 @@ class AutoEncoder(nn.Module):  # autoencoder
 def autoencoder_loss(x, x_hat):
     return F.binary_cross_entropy(x_hat, x)  # For MNIST dataset (or log prob if we get distributions)
 
+
 # Latent loss
 def latent_loss(f):
-    var_1=sigma2(gamma(f))
+    var_1 = sigma2(gamma(f))
     mean1_sqr = (1.0 - var_1) * np.square(f)
     loss_lat = 0.5 * np.sum(mean1_sqr + var_1 - np.log(var_1) - 1.0)
     return loss_lat
+
 
 ############################################################################################################
 # Diffusion process functions
@@ -123,6 +125,10 @@ def sigma2(gamma_x):
 
 def alpha(gamma_x):
     return np.sqrt(1 - sigma2(gamma_x))
+
+
+def variance_map(x, gamma_x, eps):
+    return alpha(gamma_x) * x + np.sqrt(sigma2(gamma_x)) * eps
 
 
 class ResNet(nn.Module):
@@ -197,3 +203,26 @@ class ScoreNet(nn.Module):
         h = nn.Linear(self.latent_dim, self.embedding_dim)(x)
         h = self.resnet(h, cond)
         return x + h
+
+
+def diffusion_loss(z_0, t, score_net, conditioning):
+    # z_0 is the initial latent variable
+    # t is the time step (time steps need to be discrete)
+    # z_t is the latent variable at time t
+    # z_t is a function of z_0 and t
+
+    eps = torch.randn_like(z_0)
+    gamma_x = gamma(t)
+    z_t = variance_map(z_0, gamma_x, eps)
+
+    # The score function is the derivative of the latent variable with respect to time
+    score = score_net(z_t, t, conditioning)
+    loss_diff_mse = torch.mean((score - z_t) ** 2)
+
+    # The diffusion process is a stochastic process
+    T = len(t)
+    s = t - (1. / T)
+    g_s = gamma(s)
+    loss_diff = .5 * np.expm1(g_s - gamma_x) * loss_diff_mse
+
+    return loss_diff
