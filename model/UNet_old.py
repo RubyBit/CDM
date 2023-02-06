@@ -12,80 +12,80 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 import numpy as np
-from torchvision import transforms
 
+###############################
+#Autoencoder
+#################################
+# https://github.com/g2archie/UNet-MRI-Reconstruction
+# https://amaarora.github.io/2020/09/13/unet.html#understanding-input-and-output-shapes-in-u-net This implementation
+# includes the added padding to prevent change of dimensions to produce image of same dimensions as input to
+# reconstruct the image The dimensions were adjusted to be compatible with the dimensions of the time embedding of
+# the MNIST dataset
+class Block(nn.Module):
+    def __init__(self, in_ch, out_ch):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_ch, out_ch, 3, padding=1)
+        self.relu = nn.ReLU()
+        self.conv2 = nn.Conv2d(out_ch, out_ch, 3, padding=1)
 
+    def forward(self, x):
+        return self.relu(self.conv2(self.relu(self.conv1(x))))
 
-#https://uvadlc-notebooks.readthedocs.io/en/latest/tutorial_notebooks/tutorial9/AE_CIFAR10.html
 
 class Encoder(nn.Module):
-
-    def __init__(self,
-                 num_input_channels : int,
-                 base_channel_size : int,
-                 latent_dim : int,
-                 act_fn : object = nn.GELU):
-
+    def __init__(self, chs=(1, 32, 64, 128, 256)):
         super().__init__()
-        c_hid = base_channel_size
-        self.net = nn.Sequential(
-            nn.Conv2d(num_input_channels, c_hid, kernel_size=3, padding=1, stride=2), 
-            act_fn(),
-            nn.Conv2d(c_hid, c_hid, kernel_size=3, padding=1),
-            act_fn(),
-            nn.Conv2d(c_hid, 2*c_hid, kernel_size=3, padding=1, stride=2), 
-            act_fn(),
-            nn.Conv2d(2*c_hid, 2*c_hid, kernel_size=3, padding=1),
-            act_fn(),
-            nn.Conv2d(2*c_hid, 2*c_hid, kernel_size=3, padding=1, stride=2),
-            act_fn(),
-            nn.Flatten(), 
-            nn.Linear(2*16*c_hid, latent_dim)
-        )
+        self.enc_blocks = nn.ModuleList([Block(chs[i], chs[i + 1]) for i in range(len(chs) - 1)])
+        self.pool = nn.MaxPool2d(2)
 
     def forward(self, x):
-        return self.net(x)
+        ftrs = []
+        for block in self.enc_blocks:
+            x = block(x)
+            ftrs.append(x)
+            x = self.pool(x)
+        return ftrs
+
 
 class Decoder(nn.Module):
-
-    def __init__(self,
-                 num_input_channels : int,
-                 base_channel_size : int,
-                 latent_dim : int,
-                 act_fn : object = nn.GELU):
-
+    def __init__(self, chs=(256, 128, 64, 32)):  # should the chs be the same (reverse) as the encoder?
         super().__init__()
-        c_hid = base_channel_size
-        self.linear = nn.Sequential(
-            nn.Linear(latent_dim, 2*16*c_hid),
-            act_fn()
-        )
-        self.net = nn.Sequential(
-            nn.ConvTranspose2d(2*c_hid, 2*c_hid, kernel_size=3, output_padding=1, padding=1, stride=2),
-            act_fn(),
-            nn.Conv2d(2*c_hid, 2*c_hid, kernel_size=3, padding=1),
-            act_fn(),
-            nn.ConvTranspose2d(2*c_hid, c_hid, kernel_size=3, output_padding=1, padding=1, stride=2), 
-            act_fn(),
-            nn.Conv2d(c_hid, c_hid, kernel_size=3, padding=0),
-            act_fn(),
-            nn.ConvTranspose2d(c_hid, num_input_channels, kernel_size=3, output_padding=1, padding=1, stride=2),
-            nn.Tanh() 
-        )
+        self.chs = chs
+        self.upconvs = nn.ModuleList([nn.ConvTranspose2d(chs[i], chs[i + 1], 2, 2) for i in range(len(chs) - 1)])
+        self.dec_blocks = nn.ModuleList([Block(chs[i], chs[i + 1]) for i in range(len(chs) - 1)])
+
+    def forward(self, x, encoder_features):
+        for i in range(len(self.chs) - 1):
+            x = self.upconvs[i](x)
+            enc_ftrs = self.crop(encoder_features[i], x)
+            x = torch.cat([x, enc_ftrs], dim=1)
+            x = self.dec_blocks[i](x)
+        return x
+
+    def crop(self, enc_ftrs, x):
+        _, _, H, W = x.shape
+        enc_ftrs = torchvision.transforms.CenterCrop([H, W])(enc_ftrs)
+        return enc_ftrs
+
+
+class AutoEncoder(nn.Module):  # autoencoder
+    def __init__(self, enc_chs=(1, 32, 64, 128, 256), dec_chs=(256, 128, 64, 32), num_class=1, retain_dim=False,
+                 out_sz=(572, 572)):
+        super().__init__()
+        self.out_sz = out_sz
+        self.encoder = Encoder(enc_chs)
+        self.decoder = Decoder(dec_chs)
+        self.head = nn.Conv2d(dec_chs[-1], num_class, 1)
+        self.retain_dim = retain_dim
 
     def forward(self, x):
-        x = self.linear(x)
-        x = x.reshape(x.shape[0], -1, 4, 4)
-        x = self.net(x)
-        return x
-encoder = Encoder(num_input_channels=1, base_channel_size=32, latent_dim=256)
-# input image
-x    = torch.randn(10000,1, 28, 28)
-encoder(x).shape
-decoder = Decoder(num_input_channels=1, base_channel_size=32, latent_dim=256)
-# input image
-x    = torch.randn(1000,256)
-decoder(x).shape
+        enc_ftrs = self.encoder(x)
+        out = self.decoder(enc_ftrs[::-1][0], enc_ftrs[::-1][1:])
+        out = self.head(out)
+        if self.retain_dim:
+            out = F.interpolate(out, self.out_sz)
+        return out
+
 
 # Measures the reconstruction loss from the encoding the image to latent space and then decoding it back to the image
 def autoencoder_loss(x, x_hat):
@@ -179,6 +179,7 @@ class ResNet(nn.Module):
 
 # Score neural network for the diffusion process. Approximates what you should do at each timestep
 class ScoreNet(nn.Module):
+
     def __init__(self, latent_dim, embedding_dim, n_blocks=32):
         super().__init__()
         self.latent_dim = latent_dim
@@ -190,8 +191,8 @@ class ScoreNet(nn.Module):
 
     def forward(self, x, t, conditioning):
         timestep = get_timestep_embedding(t, self.embedding_dim)
-        #assert conditioning.shape[0]==timestep.shape[0] #as the output of encoder is (1, encoded_dim) this condition must eb satisfied
-        cond = torch.cat([timestep, conditioning], dim=1)
+        assert conditioning.shape[0]==timestep.shape[0] #as the output of encoder is (1, encoded_dim) this condition must eb satisfied
+        cond = torch.cat([timestep, conditioning[:, None]], dim=1)
         cond = nn.SiLU()(nn.Linear(self.latent_dim, self.embedding_dim * 4)(cond))
         cond = nn.SiLU()(nn.Linear(self.embedding_dim * 4, self.embedding_dim * 4)(cond))
         cond = nn.Linear(self.embedding_dim * 4, self.embedding_dim)(cond)
@@ -215,77 +216,92 @@ class ScoreNet(nn.Module):
 #Shortcut for training the autoencoder (encoder and decoder are separate functions here)
 ###############################################
 
-#EXAMPLE EXECUTION OF short_cut:     short_cut(5,50,100)
+
+
 
 #https://nextjournal.com/gkoehler/pytorch-mnist
-def train(epoch, train_loader, optimizer, encoder, decoder):
-    log_interval=50
-    train_losses = []
-    train_counter = []
-    loss_f= torch.nn.MSELoss()
-    encoder.train()
-    decoder.train()
-    for batch_idx, (data, target) in enumerate(train_loader):
-        optimizer.zero_grad()
-        encoded_data = encoder(data)
-        # Decode data
-        decoded_data = decoder(encoded_data)
-        loss = loss_f(decoded_data, data)
-        loss.backward()
-        optimizer.step()
-        if batch_idx % log_interval == 0:
-            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
-            epoch, batch_idx * len(data), len(train_loader.dataset),
-            100. * batch_idx / len(train_loader), loss.item()))
-            train_losses.append(loss.item())
-            train_counter.append(
-            (batch_idx*1000) + ((epoch-1)*len(train_loader.dataset)))
-def test(test_loader, encoder, decoder):
-    loss_f= torch.nn.MSELoss()
-    test_losses = []
-    encoder.eval()
-    decoder.eval()
-    test_loss = 0
-    with torch.no_grad():
-        for data, target in test_loader:
-            encoded_data = encoder(data)
-            # Decode data
-            output= decoder(encoded_data)
-            test_loss += loss_f(output,data).item()
-    test_loss /= len(test_loader.dataset)
-    test_losses.append(test_loss)
-    print('\nTest set: Avg. loss: {:.4f} \n'.format(
-        test_loss))
+def get_data():
+    images = []
+    labels = []
+    dataset = torchvision.datasets.MNIST(root='./')
+    for img, label in dataset: 
+            images.append(img)
+            labels.append(label)
+    return images, labels
+def __getitem__(index):
+    img = images[index]
+    img = train_trans(img)
+    label = np.array(labels[index], dtype=np.float)
+    return img, label
+    
 
-def short_cut(n_epochs, batch_size_train,batch_size_test):
-    train_loader = torch.utils.data.DataLoader(
-    torchvision.datasets.MNIST('./', train=True, download=False,
-                                transform=torchvision.transforms.Compose([
-                                torchvision.transforms.ToTensor(),
-                                torchvision.transforms.Normalize(
-                                    (0.1307,), (0.3081,))
-                                ])),batch_size=batch_size_train, shuffle=True)
+def train(epoch):
+  encoder.train()
+  decoder.train()
+  for batch_idx, (data, target) in enumerate(train_loader):
+      optimizer.zero_grad()
+      encoded_data = encoder(data)
+      # Decode data
+      decoded_data = decoder(encoded_data)
+      loss = loss_f(decoded_data, data)
+      loss.backward()
+      optimizer.step()
+      if batch_idx % log_interval == 0:
+        print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
+          epoch, batch_idx * len(data), len(train_loader.dataset),
+          100. * batch_idx / len(train_loader), loss.item()))
+        train_losses.append(loss.item())
+        train_counter.append(
+          (batch_idx*1000) + ((epoch-1)*len(train_loader.dataset)))
+def test():
+  encoder.eval()
+  decoder.eval()
+  test_loss = 0
+  correct = 0
+  with torch.no_grad():
+    for data, target in test_loader:
+      encoded_data = encoder(data)
+      # Decode data
+      output= decoder(encoded_data)
+      test_loss += loss_f(output,data).item()
+      #print(test_loss)
+      #pred = output.data.max(1, keepdim=True)[1]
+      #correct += pred.eq(target.data.view_as(pred)).sum()
+  test_loss /= len(test_loader.dataset)
+  test_losses.append(test_loss)
+  print('\nTest set: Avg. loss: {:.4f} \n'.format(
+    test_loss))
 
-    test_loader = torch.utils.data.DataLoader(
-    torchvision.datasets.MNIST('./', train=False, download=False,
-                                transform=torchvision.transforms.Compose([
-                                torchvision.transforms.ToTensor(),
-                                torchvision.transforms.Normalize(
-                                    (0.1307,), (0.3081,))
-                                ])),batch_size=batch_size_test, shuffle=True)
+def short_cut():
+  encoder=Encoder(num_input_channels=1, base_channel_size=32, latent_dim=256)
+  decoder=Decoder(num_input_channels=1, base_channel_size=32, latent_dim=256)
+  images, labels=get_data()
+  mean = (0.1307, )
+  std = (0.3081, ) 
+  learning_rate = 0.01
+  momentum = 0.5
+  log_interval=10
 
-    encoder=Encoder(num_input_channels=1, base_channel_size=32, latent_dim=256)
-    decoder=Decoder(num_input_channels=1, base_channel_size=32, latent_dim=256)
-    mean = (0.1307, )
-    std = (0.3081, ) 
-    learning_rate = 0.01
 
-    params_to_optimize = [
-        {'params': encoder.parameters()},
-        {'params': decoder.parameters()}
-    ]
-    optimizer = torch.optim.Adam(params_to_optimize,lr=learning_rate)
+  params_to_optimize = [
+    {'params': encoder.parameters()},
+    {'params': decoder.parameters()}
+  ]
+  optimizer = torch.optim.Adam(params_to_optimize,lr=learning_rate)
 
-    for epoch in range(1, n_epochs + 1):
-        train(epoch=epoch, train_loader=train_loader, optimizer=optimizer, encoder=encoder,decoder=decoder)
-        test(train_loader=train_loader, encoder=encoder,decoder=decoder)
+  train_trans = transforms.Compose([
+  transforms.RandomRotation((0, 10), fill=(0, )), 
+  transforms.ToTensor(),
+  transforms.Normalize(mean, std)
+  ])
+
+  train_losses = []
+  train_counter = []
+  test_losses = []
+  test_counter = [i*len(train_loader.dataset) for i in range(n_epochs + 1)]
+  loss_f= torch.nn.MSELoss()
+
+  for epoch in range(1, n_epochs + 1):
+    train(epoch)
+
+
