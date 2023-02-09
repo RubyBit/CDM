@@ -78,14 +78,7 @@ class Decoder(nn.Module):
         x = x.reshape(x.shape[0], -1, 4, 4)
         x = self.net(x)
         return x
-encoder = Encoder(num_input_channels=1, base_channel_size=32, latent_dim=256)
-# input image
-x    = torch.randn(10000,1, 28, 28)
-encoder(x).shape
-decoder = Decoder(num_input_channels=1, base_channel_size=32, latent_dim=256)
-# input image
-x    = torch.randn(1000,256)
-decoder(x).shape
+
 
 # Measures the reconstruction loss from the encoding the image to latent space and then decoding it back to the image
 def autoencoder_loss(x, x_hat):
