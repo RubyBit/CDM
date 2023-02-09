@@ -1,4 +1,5 @@
 import math
+import random
 from inspect import isfunction
 from functools import partial
 
@@ -48,6 +49,7 @@ class Encoder(nn.Module):
 
 class Decoder(nn.Module):
 
+
     def __init__(self,
                  num_input_channels : int,
                  base_channel_size : int,
@@ -84,12 +86,27 @@ class Decoder(nn.Module):
 def autoencoder_loss(x, x_hat):
     return F.binary_cross_entropy(x_hat, x)  # For MNIST dataset (or log prob if we get distributions)
 
+
 # Latent loss
+
 def latent_loss(x_hat):
     var_1=sigma2(gamma(x_hat))
     mean1_sqr = (1.0 - var_1) * np.square(x_hat)
     loss_lat = 0.5 * np.sum(mean1_sqr + var_1 - np.log(var_1) - 1.0)
     return loss_lat
+
+
+def recon_loss(img, enc_img, decoder: Decoder):
+    g_0 = gamma(0)
+    # numpy normal distribution
+    eps_0 = np.random.normal(size=enc_img.size())
+    z_0 = variance_map(enc_img, g_0, eps_0)
+    # rescale
+    z_0_rescaled = z_0 / alpha(g_0)
+    # decode
+    decoded_img = decoder(z_0_rescaled)
+    return autoencoder_loss(img, decoded_img)
+
 
 ############################################################################################################
 # Diffusion process functions
@@ -113,11 +130,18 @@ def gamma(ts, gamma_min=-6, gamma_max=6):
 
 
 def sigma2(gamma_x):
-    return torch.sigmoid(-gamma_x)
+    tensor = torch.tensor(gamma_x)
+    return torch.sigmoid(-tensor)  # correct?
 
 
 def alpha(gamma_x):
     return np.sqrt(1 - sigma2(gamma_x))
+
+
+
+def variance_map(x, gamma_x, eps):
+    return alpha(gamma_x) * x + np.sqrt(sigma2(gamma_x)) * eps
+
 
 class ResNet(nn.Module):
     def __init__(self, in_ch, out_ch, num_blocks=4, num_layers=4, num_filters=64, kernel_size=3, stride=1, padding=1,
@@ -193,13 +217,14 @@ class ScoreNet(nn.Module):
         h = self.resnet(h, cond)
         return x + h
 
+
     def generate_x(self, z_0,latent_dim=latent_dim,embedding_dim=embedding_dim):
         g_0 =ScoreNet(latent_dim,embedding_dim)(0.0)
 
         var_0 = nn.sigmoid(g_0)
         z_0_rescaled = z_0 / np.sqrt(1. - var_0)
 
-        logits = self.encdec.decode(z_0_rescaled, g_0)
+        logits = self.encdec.decode(z_0_rescaled, g_0) # should this be changed?
 
         # get output samples
 
@@ -282,3 +307,79 @@ def short_cut(n_epochs, batch_size_train,batch_size_test):
     for epoch in range(1, n_epochs + 1):
         train(epoch=epoch, train_loader=train_loader, optimizer=optimizer, encoder=encoder,decoder=decoder)
         test(train_loader=train_loader, encoder=encoder,decoder=decoder)
+
+
+def diffusion_loss(z_0, t, score_net, conditioning):
+    # z_0 is the initial latent variable
+    # t is the time step (time steps need to be discrete)
+    # z_t is the latent variable at time t
+    # z_t is a function of z_0 and t
+
+    eps = torch.randn_like(z_0)
+    gamma_x = gamma(t)
+    z_t = variance_map(z_0, gamma_x, eps)
+
+    # The score function is the derivative of the latent variable with respect to time
+    score = score_net(z_t, t, conditioning)
+    loss_diff_mse = torch.mean((score - z_t) ** 2)
+
+    # The diffusion process is a stochastic process
+    T = len(t)
+    s = t - (1. / T)
+    g_s = gamma(s)
+    loss_diff = .5 * np.expm1(g_s - gamma_x) * loss_diff_mse
+
+    return loss_diff
+
+
+class VariationalDiffusion(nn.Module):
+    timesteps: int = 1000
+    layers: int = 32
+    gamma_min: float = -3.0
+    gamma_max: float = 3.0
+
+    def __init__(self, latent_dim, embedding_dim, n_blocks=32):
+        super().__init__()
+        self.latent_dim = latent_dim
+        self.embedding_dim = embedding_dim
+        self.score_net = ScoreNet(self.latent_dim, self.embedding_dim, n_blocks=n_blocks)
+        self.encoder = Encoder()
+        self.decoder = Decoder()
+
+    def forward(self, img, conditioning=None):  # combined loss for diffusion and reconstruction
+        # encoding image
+        z_0 = self.encoder(img)
+        # encoder loss
+        loss_recon = recon_loss(img, z_0, self.decoder)
+
+        loss_latent = latent_loss(z_0)
+
+        # diffusion loss
+        # we need to sample time steps
+        t = torch.rand((z_0.shape[0], 1))
+        # discretize time steps
+        t = np.ceil(t * self.timesteps)
+        loss_diff = diffusion_loss(z_0, t, self.score_net, conditioning)
+        return loss_recon + loss_latent + loss_diff
+
+    def sample(self, z, t, conditioning, num_samples=1):
+        eps = torch.randn((num_samples, self.latent_dim))
+        gamma_x = gamma(t)
+        z_t = variance_map(eps, gamma_x, eps)
+        score = self.score_net(z_t, t, conditioning)
+        return z_t + score
+
+    def sample_from_prior(self, t, num_samples=1):
+        return self.sample(t, conditioning=torch.zeros((num_samples, 0)), num_samples=num_samples)
+
+    def sample_from_posterior(self, t, conditioning, num_samples=1):
+        return self.sample(t, conditioning=conditioning, num_samples=num_samples)
+
+
+if __name__ == "__main__":
+    # model
+    model = VariationalDiffusion(32, 32)
+    # a random image 28x28x1
+    img = torch.randn(1, 1, 28, 28)
+    model(img)
+
