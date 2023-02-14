@@ -16,77 +16,79 @@ import numpy as np
 from torchvision import transforms
 
 
-
-#https://uvadlc-notebooks.readthedocs.io/en/latest/tutorial_notebooks/tutorial9/AE_CIFAR10.html
+# https://uvadlc-notebooks.readthedocs.io/en/latest/tutorial_notebooks/tutorial9/AE_CIFAR10.html
 
 class Encoder(nn.Module):
 
     def __init__(self,
-                 num_input_channels : int,
-                 base_channel_size : int,
-                 latent_dim : int,
-                 act_fn : object = nn.GELU):
-
+                 num_input_channels: int,
+                 base_channel_size: int,
+                 latent_dim: int):
         super().__init__()
         c_hid = base_channel_size
         self.net = nn.Sequential(
-            nn.Conv2d(num_input_channels, c_hid, kernel_size=3, padding=1, stride=2), 
-            act_fn(),
+            nn.Conv2d(num_input_channels, c_hid, kernel_size=3, padding=1, stride=2),
+            nn.GELU(),
             nn.Conv2d(c_hid, c_hid, kernel_size=3, padding=1),
-            act_fn(),
-            nn.Conv2d(c_hid, 2*c_hid, kernel_size=3, padding=1, stride=2), 
-            act_fn(),
-            nn.Conv2d(2*c_hid, 2*c_hid, kernel_size=3, padding=1),
-            act_fn(),
-            nn.Conv2d(2*c_hid, 2*c_hid, kernel_size=3, padding=1, stride=2),
-            act_fn(),
-            nn.Flatten(), 
-            nn.Linear(2*16*c_hid, latent_dim)
+            nn.GELU(),
+            nn.Conv2d(c_hid, 2 * c_hid, kernel_size=3, padding=1, stride=2),
+            nn.GELU(),
+            nn.Conv2d(2 * c_hid, 2 * c_hid, kernel_size=3, padding=1),
+            nn.GELU(),
+            nn.Conv2d(2 * c_hid, 2 * c_hid, kernel_size=3, padding=1, stride=2),
+            nn.GELU(),
+            nn.Flatten(),
+            nn.Linear(2 * 16 * c_hid, latent_dim)
         )
 
     def forward(self, x):
         return self.net(x)
 
+
 class Decoder(nn.Module):
 
     def __init__(self,
-                 num_input_channels : int,
-                 base_channel_size : int,
-                 latent_dim : int,
-                 act_fn : object = nn.GELU):
-
+                 num_input_channels: int,
+                 base_channel_size: int,
+                 latent_dim: int):
         super().__init__()
         c_hid = base_channel_size
         self.linear = nn.Sequential(
-            nn.Linear(latent_dim, 2*16*c_hid),
-            act_fn()
+            nn.Linear(latent_dim, 2 * 16 * c_hid),
+            nn.GELU()
         )
         self.net = nn.Sequential(
-            nn.ConvTranspose2d(2*c_hid, 2*c_hid, kernel_size=3, output_padding=1, padding=1, stride=2),
-            act_fn(),
-            nn.Conv2d(2*c_hid, 2*c_hid, kernel_size=3, padding=1),
-            act_fn(),
-            nn.ConvTranspose2d(2*c_hid, c_hid, kernel_size=3, output_padding=1, padding=1, stride=2), 
-            act_fn(),
+            nn.ConvTranspose2d(2 * c_hid, 2 * c_hid, kernel_size=3, output_padding=1, padding=1, stride=2),
+            nn.GELU(),
+            nn.Conv2d(2 * c_hid, 2 * c_hid, kernel_size=3, padding=1),
+            nn.GELU(),
+            nn.ConvTranspose2d(2 * c_hid, c_hid, kernel_size=3, output_padding=1, padding=1, stride=2),
+            nn.GELU(),
             nn.Conv2d(c_hid, c_hid, kernel_size=3, padding=0),
-            act_fn(),
+            nn.GELU(),
             nn.ConvTranspose2d(c_hid, num_input_channels, kernel_size=3, output_padding=1, padding=1, stride=2),
-            nn.Tanh() 
+            nn.Tanh()
         )
 
     def forward(self, x):
+        x = x.to(torch.float32)  # because linear layer expects float32
         x = self.linear(x)
         x = x.reshape(x.shape[0], -1, 4, 4)
         x = self.net(x)
         return x
+
+
+"""
 encoder = Encoder(num_input_channels=1, base_channel_size=32, latent_dim=256)
 # input image
-x    = torch.randn(10000,1, 28, 28)
+x = torch.randn(10000, 1, 28, 28)
 encoder(x).shape
 decoder = Decoder(num_input_channels=1, base_channel_size=32, latent_dim=256)
 # input image
-x    = torch.randn(1000,256)
+x = torch.randn(1000, 256)
 decoder(x).shape
+"""
+
 
 # Measures the reconstruction loss from the encoding the image to latent space and then decoding it back to the image
 def autoencoder_loss(x, x_hat):
@@ -95,9 +97,9 @@ def autoencoder_loss(x, x_hat):
 
 # Latent loss
 def latent_loss(x_hat):
-    var_1=sigma2(gamma(x_hat))
-    mean1_sqr = (1.0 - var_1) * np.square(x_hat)
-    loss_lat = 0.5 * np.sum(mean1_sqr + var_1 - np.log(var_1) - 1.0)
+    var_1 = sigma2(gamma(x_hat))
+    mean1_sqr = (1.0 - var_1) * torch.square(x_hat)
+    loss_lat = 0.5 * (mean1_sqr + var_1 - np.log(var_1) - 1.0)
     return loss_lat
 
 
@@ -110,6 +112,8 @@ def recon_loss(img, enc_img, decoder: Decoder):
     z_0_rescaled = z_0 / alpha(g_0)
     # decode
     decoded_img = decoder(z_0_rescaled)
+    # make sure decoded_img is positive (change tensor sign)
+    decoded_img = torch.where(decoded_img < 0, -decoded_img, decoded_img)  # this might be a bottleneck
     return autoencoder_loss(img, decoded_img)
 
 
@@ -148,54 +152,35 @@ def variance_map(x, gamma_x, eps):
 
 
 class ResNet(nn.Module):
-    def __init__(self, in_ch, out_ch, num_blocks=4, num_layers=4, num_filters=64, kernel_size=3, stride=1, padding=1,
-                 dilation=1, groups=1, bias=True, padding_mode='zeros', activation=nn.ReLU, norm=nn.BatchNorm2d,
-                 dropout=nn.Dropout2d, residual=True, **kwargs):
+    # Residual network
+    def __init__(self, latent_dim, embed_dim, num_blocks=4, num_layers=10, activation=nn.ReLU, norm=nn.LayerNorm):
         super().__init__()
-        self.residual = residual
-        self.activation = activation
-        self.norm = norm
-        self.dropout = dropout
-        self.in_ch = in_ch
-        self.out_ch = out_ch
+        self.latent_dim = latent_dim
+        self.embed_dim = embed_dim
         self.num_blocks = num_blocks
         self.num_layers = num_layers
-        self.num_filters = num_filters
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = padding
-        self.dilation = dilation
-        self.groups = groups
-        self.bias = bias
-        self.padding_mode = padding_mode
-        self.kwargs = kwargs
+        self.activation = activation
+        self.norm = norm
 
-        self.blocks = nn.ModuleList([self._make_block() for _ in range(self.num_blocks)])
-        self.head = nn.Conv2d(self.num_filters, self.out_ch, 1)
+        self.blocks = nn.ModuleList()
+        for _ in range(self.num_layers):
+            self.blocks.append(self._make_block())
 
     def _make_block(self):
-        layers = []
-        for _ in range(self.num_layers):
-            layers.append(nn.Conv2d(self.in_ch, self.num_filters, self.kernel_size, self.stride, self.padding,
-                                    self.dilation, self.groups, self.bias, self.padding_mode))
-            if self.norm is not None:
-                layers.append(self.norm(self.num_filters))
-            if self.activation is not None:
-                layers.append(self.activation())
-            if self.dropout is not None:
-                layers.append(self.dropout())
-            self.in_ch = self.num_filters
+        # without convolutional layers
+        layers = [self.norm([self.latent_dim]), self.activation(), nn.Linear(self.latent_dim, self.embed_dim)]
         return nn.Sequential(*layers)
 
-    def forward(self, x, cond=None):
+    def forward(self, x, cond):
+        z = x
         for block in self.blocks:
-            res = x
-            x = block(x)
+            h = block(z)
             if cond is not None:
-                x += nn.Linear(cond.shape[1], x.shape[1], bias=False)(cond)
-            if self.residual:
-                x = x + res
-        return self.head(x)
+                h = h + nn.Linear(cond.shape[1], self.embed_dim, bias=False)(cond)
+            h = self.activation()(self.norm([self.embed_dim])(h))
+            h = nn.Linear(self.embed_dim, self.latent_dim)(h)
+        z = z + h
+        return z
 
 
 # Score neural network for the diffusion process. Approximates what you should do at each timestep
@@ -204,20 +189,19 @@ class ScoreNet(nn.Module):
         super().__init__()
         self.latent_dim = latent_dim
         self.embedding_dim = embedding_dim
-        self.resnet = ResNet(self.latent_dim, self.latent_dim, num_blocks=n_blocks, num_layers=4,
-                             num_filters=64, kernel_size=1, stride=1, padding=1, dilation=1, groups=1, bias=True,
-                             padding_mode='zeros', activation=nn.ReLU, norm=nn.BatchNorm2d, dropout=nn.Dropout2d,
-                             residual=True)
+        self.resnet = ResNet(self.embedding_dim, self.embedding_dim * 2)
 
     def forward(self, x, t, conditioning):
         timestep = get_timestep_embedding(t, self.embedding_dim)
-        #assert conditioning.shape[0]==timestep.shape[0] #as the output of encoder is (1, encoded_dim) this condition must eb satisfied
-        cond = torch.cat([timestep, conditioning], dim=1)
-        cond = nn.SiLU()(nn.Linear(self.latent_dim, self.embedding_dim * 4)(cond))
+        # assert conditioning.shape[0]==timestep.shape[0] #as the output of encoder is (1, encoded_dim) this condition must eb satisfied
+        cond = timestep  # cond = torch.cat((timestep, conditioning), dim=1)
+
+        cond = nn.SiLU()(nn.Linear(self.embedding_dim, self.embedding_dim * 4)(cond))
         cond = nn.SiLU()(nn.Linear(self.embedding_dim * 4, self.embedding_dim * 4)(cond))
         cond = nn.Linear(self.embedding_dim * 4, self.embedding_dim)(cond)
 
-        h = nn.Linear(self.latent_dim, self.embedding_dim)(x)
+        h = nn.Linear(self.latent_dim, self.embedding_dim)(x)  # hardcoded but should be latent_dim
+        # h = torch.reshape(h, (1, 32, 1, 1))  # Reshaped for convolutional layers
         h = self.resnet(h, cond)
         return x + h
 
@@ -256,8 +240,8 @@ class VariationalDiffusion(nn.Module):
         self.latent_dim = latent_dim
         self.embedding_dim = embedding_dim
         self.score_net = ScoreNet(self.latent_dim, self.embedding_dim, n_blocks=n_blocks)
-        self.encoder = Encoder()
-        self.decoder = Decoder()
+        self.encoder = Encoder(1, 32, 128)
+        self.decoder = Decoder(1, 32, 128)
 
     def forward(self, img, conditioning=None):  # combined loss for diffusion and reconstruction
         # encoding image
@@ -291,7 +275,7 @@ class VariationalDiffusion(nn.Module):
 
 if __name__ == "__main__":
     # model
-    model = VariationalDiffusion(32, 32)
+    model = VariationalDiffusion(128, 128)
     # a random image 28x28x1
     img = torch.randn(1, 1, 28, 28)
     model(img)
