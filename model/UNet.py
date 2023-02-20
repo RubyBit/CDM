@@ -97,9 +97,9 @@ def autoencoder_loss(x, x_hat):
 
 # Latent loss
 def latent_loss(x_hat):
-    var_1 = sigma2(gamma(x_hat))
-    mean1_sqr = (1.0 - var_1) * torch.square(x_hat)
-    loss_lat = 0.5 * (mean1_sqr + var_1 - np.log(var_1) - 1.0)
+    var_1 = sigma2(gamma(1.0))
+    mean_sqr = (1. - var_1) * torch.square(x_hat)
+    loss_lat = 0.5 * torch.sum(mean_sqr + var_1 - torch.log(var_1) - 1, dim=1)
     return loss_lat
 
 
@@ -303,7 +303,7 @@ def diffusion_loss(z_0, t, score_net, conditioning):
 
     # The score function is the derivative of the latent variable with respect to time
     score = score_net(z_t, t, conditioning)
-    loss_diff_mse = torch.mean((score - z_t) ** 2)
+    loss_diff_mse = torch.sum((torch.square(eps - score)), dim=-1)
 
     # The diffusion process is a stochastic process
     T = len(t)
@@ -363,4 +363,7 @@ if __name__ == "__main__":
     model = VariationalDiffusion(128, 128)
     # a random image 28x28x1
     img = torch.randn(5, 1, 28, 28)
-    model(img)
+    losses = model(img)
+    # rescale diffusion loss
+    diff_loss = torch.mean(losses[2]) / (np.prod(img.shape[1:]) * np.log(2))
+    print(diff_loss)
