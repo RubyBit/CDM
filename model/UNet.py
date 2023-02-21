@@ -97,9 +97,9 @@ def autoencoder_loss(x, x_hat):
 
 # Latent loss
 def latent_loss(x_hat):
-    var_1 = sigma2(gamma(x_hat))
-    mean1_sqr = (1.0 - var_1) * torch.square(x_hat)
-    loss_lat = 0.5 * (mean1_sqr + var_1 - np.log(var_1) - 1.0)
+    var_1 = sigma2(gamma(1.0))
+    mean_sqr = (1. - var_1) * torch.square(x_hat)
+    loss_lat = 0.5 * torch.sum(mean_sqr + var_1 - torch.log(var_1) - 1, dim=1)
     return loss_lat
 
 
@@ -114,6 +114,8 @@ def recon_loss(img, enc_img, decoder: Decoder):
     decoded_img = decoder(z_0_rescaled)
     # make sure decoded_img is positive (change tensor sign)
     decoded_img = torch.where(decoded_img < 0, -decoded_img, decoded_img)  # this might be a bottleneck
+    # make sure decoded_img is positive (change tensor sign)
+    decoded_img = torch.where(decoded_img < 0, -decoded_img, decoded_img)  # this might be a bottleneck
     return autoencoder_loss(img, decoded_img)
 
 
@@ -122,14 +124,15 @@ def recon_loss(img, enc_img, decoder: Decoder):
 ############################################################################################################
 # The timestep embedding is for the diffusion model to learn the temporal information of the time series
 def get_timestep_embedding(timesteps, embedding_dim):
-    timesteps *= 1000
+    t = timesteps
+    t = t * 1000
     half_dim = embedding_dim // 2
     emb = np.log(10000) / (half_dim - 1)
     emb = np.exp(np.arange(half_dim) * -emb)
-    emb = np.outer(timesteps, emb)
+    emb = np.outer(t, emb)
     emb = np.concatenate([np.sin(emb), np.cos(emb)], axis=1)
 
-    assert emb.shape == (timesteps.shape[0], embedding_dim)
+    assert emb.shape == (t.shape[0], embedding_dim)
     return torch.from_numpy(emb).float()
 
 
@@ -154,14 +157,23 @@ def variance_map(x, gamma_x, eps):
 class ResNet(nn.Module):
     # Residual network
     def __init__(self, latent_dim, embed_dim, num_blocks=4, num_layers=10, activation=nn.ReLU, norm=nn.LayerNorm):
+    # Residual network
+    def __init__(self, latent_dim, embed_dim, num_blocks=4, num_layers=10, activation=nn.ReLU, norm=nn.LayerNorm):
         super().__init__()
+        self.latent_dim = latent_dim
+        self.embed_dim = embed_dim
         self.latent_dim = latent_dim
         self.embed_dim = embed_dim
         self.num_blocks = num_blocks
         self.num_layers = num_layers
         self.activation = activation
         self.norm = norm
+        self.activation = activation
+        self.norm = norm
 
+        self.blocks = nn.ModuleList()
+        for _ in range(self.num_layers):
+            self.blocks.append(self._make_block())
         self.blocks = nn.ModuleList()
         for _ in range(self.num_layers):
             self.blocks.append(self._make_block())
@@ -169,13 +181,23 @@ class ResNet(nn.Module):
     def _make_block(self):
         # without convolutional layers
         layers = [self.norm([self.latent_dim]), self.activation(), nn.Linear(self.latent_dim, self.embed_dim)]
+        # without convolutional layers
+        layers = [self.norm([self.latent_dim]), self.activation(), nn.Linear(self.latent_dim, self.embed_dim)]
         return nn.Sequential(*layers)
 
     def forward(self, x, cond):
         z = x
+    def forward(self, x, cond):
+        z = x
         for block in self.blocks:
             h = block(z)
+            h = block(z)
             if cond is not None:
+                h = h + nn.Linear(cond.shape[1], self.embed_dim, bias=False)(cond)
+            h = self.activation()(self.norm([self.embed_dim])(h))
+            h = nn.Linear(self.embed_dim, self.latent_dim)(h)
+        z = z + h
+        return z
                 h = h + nn.Linear(cond.shape[1], self.embed_dim, bias=False)(cond)
             h = self.activation()(self.norm([self.embed_dim])(h))
             h = nn.Linear(self.embed_dim, self.latent_dim)(h)
@@ -190,9 +212,14 @@ class ScoreNet(nn.Module):
         self.latent_dim = latent_dim
         self.embedding_dim = embedding_dim
         self.resnet = ResNet(self.embedding_dim, self.embedding_dim * 2)
+        self.resnet = ResNet(self.embedding_dim, self.embedding_dim * 2)
 
     def forward(self, x, t, conditioning):
         timestep = get_timestep_embedding(t, self.embedding_dim)
+        # assert conditioning.shape[0]==timestep.shape[0] #as the output of encoder is (1, encoded_dim) this condition must eb satisfied
+        cond = timestep  # cond = torch.cat((timestep, conditioning), dim=1)
+
+        cond = nn.SiLU()(nn.Linear(self.embedding_dim, self.embedding_dim * 4)(cond))
         # assert conditioning.shape[0]==timestep.shape[0] #as the output of encoder is (1, encoded_dim) this condition must eb satisfied
         cond = timestep  # cond = torch.cat((timestep, conditioning), dim=1)
 
@@ -201,30 +228,126 @@ class ScoreNet(nn.Module):
         cond = nn.Linear(self.embedding_dim * 4, self.embedding_dim)(cond)
 
         h = nn.Linear(self.latent_dim, self.embedding_dim)(x)  # hardcoded but should be latent_dim
-        #h = torch.reshape(h, (1, 32, 1, 1))  # Reshaped for convolutional layers
+        #h = torch.reshape(h, (1, 32, 1, 1))  # Reshaped for convolutional layers  # hardcoded but should be latent_dim
+        # h = torch.reshape(h, (1, 32, 1, 1))  # Reshaped for convolutional layers
         h = self.resnet(h, cond)
         return x + h
 
 
-def diffusion_loss(z_0, t, score_net, conditioning):
+    def generate_x(self, z_0,latent_dim=latent_dim,embedding_dim=embedding_dim):
+        g_0 =ScoreNet(latent_dim,embedding_dim)(0.0)
+
+        var_0 = nn.sigmoid(g_0)
+        z_0_rescaled = z_0 / np.sqrt(1. - var_0)
+
+        logits = self.encdec.decode(z_0_rescaled, g_0) # should this be changed?
+
+        # get output samples
+
+################################################
+
+# Shortcut for training the autoencoder (encoder and decoder are separate functions here)
+###############################################
+
+# EXAMPLE EXECUTION OF short_cut:     short_cut(5,50,100)
+
+# https://nextjournal.com/gkoehler/pytorch-mnist
+def train(epoch, train_loader, optimizer, encoder, decoder):
+    log_interval = 50
+    train_losses = []
+    train_counter = []
+    loss_f = torch.nn.MSELoss()
+    encoder.train()
+    decoder.train()
+    for batch_idx, (data, target) in enumerate(train_loader):
+        optimizer.zero_grad()
+        encoded_data = encoder(data)
+        # Decode data
+        decoded_data = decoder(encoded_data)
+        loss = loss_f(decoded_data, data)
+        loss.backward()
+        optimizer.step()
+        if batch_idx % log_interval == 0:
+            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
+                epoch, batch_idx * len(data), len(train_loader.dataset),
+                       100. * batch_idx / len(train_loader), loss.item()))
+            train_losses.append(loss.item())
+            train_counter.append(
+                (batch_idx * 1000) + ((epoch - 1) * len(train_loader.dataset)))
+
+
+def test(test_loader, encoder, decoder):
+    loss_f = torch.nn.MSELoss()
+    test_losses = []
+    encoder.eval()
+    decoder.eval()
+    test_loss = 0
+    with torch.no_grad():
+        for data, target in test_loader:
+            encoded_data = encoder(data)
+            # Decode data
+            output = decoder(encoded_data)
+            test_loss += loss_f(output, data).item()
+    test_loss /= len(test_loader.dataset)
+    test_losses.append(test_loss)
+    print('\nTest set: Avg. loss: {:.4f} \n'.format(
+        test_loss))
+
+
+def short_cut(n_epochs, batch_size_train, batch_size_test):
+    train_loader = torch.utils.data.DataLoader(
+        torchvision.datasets.MNIST('./', train=True, download=False,
+                                   transform=torchvision.transforms.Compose([
+                                       torchvision.transforms.ToTensor(),
+                                       torchvision.transforms.Normalize(
+                                           (0.1307,), (0.3081,))
+                                   ])), batch_size=batch_size_train, shuffle=True)
+
+    test_loader = torch.utils.data.DataLoader(
+        torchvision.datasets.MNIST('./', train=False, download=False,
+                                   transform=torchvision.transforms.Compose([
+                                       torchvision.transforms.ToTensor(),
+                                       torchvision.transforms.Normalize(
+                                           (0.1307,), (0.3081,))
+                                   ])), batch_size=batch_size_test, shuffle=True)
+
+    encoder = Encoder(num_input_channels=1, base_channel_size=32, latent_dim=256)
+    decoder = Decoder(num_input_channels=1, base_channel_size=32, latent_dim=256)
+    mean = (0.1307,)
+    std = (0.3081,)
+    learning_rate = 0.01
+
+    params_to_optimize = [
+        {'params': encoder.parameters()},
+        {'params': decoder.parameters()}
+    ]
+    optimizer = torch.optim.Adam(params_to_optimize, lr=learning_rate)
+
+    for epoch in range(1, n_epochs + 1):
+        train(epoch=epoch, train_loader=train_loader, optimizer=optimizer, encoder=encoder, decoder=decoder)
+        test(train_loader=train_loader, encoder=encoder, decoder=decoder)
+
+
+def diffusion_loss(z_0, t, score_net, conditioning, timesteps):
     # z_0 is the initial latent variable
     # t is the time step (time steps need to be discrete)
     # z_t is the latent variable at time t
     # z_t is a function of z_0 and t
 
+    # Eps is a random tensor with the same shape as z_0 drawn from a normal distribution
     eps = torch.randn_like(z_0)
     gamma_x = gamma(t)
     z_t = variance_map(z_0, gamma_x, eps)
 
     # The score function is the derivative of the latent variable with respect to time
     score = score_net(z_t, t, conditioning)
-    loss_diff_mse = torch.mean((score - z_t) ** 2)
+    loss_diff_mse = torch.sum((torch.square(eps - score)), dim=-1)
 
     # The diffusion process is a stochastic process
-    T = len(t)
+    T = timesteps
     s = t - (1. / T)
     g_s = gamma(s)
-    loss_diff = .5 * np.expm1(g_s - gamma_x) * loss_diff_mse
+    loss_diff = .5 * T * np.expm1(g_s - gamma_x) * loss_diff_mse
 
     return loss_diff
 
@@ -234,6 +357,7 @@ class VariationalDiffusion(nn.Module):
     layers: int = 32
     gamma_min: float = -3.0
     gamma_max: float = 3.0
+    antithetic: bool = False
 
     def __init__(self, latent_dim, embedding_dim, n_blocks=32):
         super().__init__()
@@ -253,11 +377,19 @@ class VariationalDiffusion(nn.Module):
 
         # diffusion loss
         # we need to sample time steps
-        t = torch.rand((z_0.shape[0], 1))
+        if self.antithetic:
+            orig_t = torch.rand(1)
+            t = np.mod(orig_t + np.arange(0., 1., step=1. / img.shape[0]), 1.0)
+            # turn to float32
+            t = t.to(torch.float32)
+            t = torch.reshape(t, (img.shape[0], 1))
+        else:
+            t = torch.rand((img.shape[0], 1))
+
         # discretize time steps
-        t = np.ceil(t * self.timesteps)
-        loss_diff = diffusion_loss(z_0, t, self.score_net, conditioning)
-        return loss_recon + loss_latent + loss_diff
+        t = np.ceil(t * self.timesteps) / self.timesteps
+        loss_diff = diffusion_loss(z_0, t, self.score_net, conditioning, self.timesteps)
+        return loss_recon, loss_latent, loss_diff
 
     def sample(self, z, t, conditioning, num_samples=1):
         eps = torch.randn((num_samples, self.latent_dim))
@@ -272,84 +404,6 @@ class VariationalDiffusion(nn.Module):
     def sample_from_posterior(self, t, conditioning, num_samples=1):
         return self.sample(t, conditioning=conditioning, num_samples=num_samples)
 
-
-################################################
-
-#Shortcut for training the autoencoder (encoder and decoder are separate functions here)
-###############################################
-
-#EXAMPLE EXECUTION OF short_cut:     short_cut(5,50,100)
-
-#https://nextjournal.com/gkoehler/pytorch-mnist
-def train(epoch, train_loader, optimizer, encoder, decoder):
-    log_interval=50
-    train_losses = []
-    train_counter = []
-    loss_f= torch.nn.MSELoss()
-    encoder.train()
-    decoder.train()
-    for batch_idx, (data, target) in enumerate(train_loader):
-        optimizer.zero_grad()
-        encoded_data = encoder(data)
-        # Decode data
-        decoded_data = decoder(encoded_data)
-        loss = loss_f(decoded_data, data)
-        loss.backward()
-        optimizer.step()
-        if batch_idx % log_interval == 0:
-            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
-            epoch, batch_idx * len(data), len(train_loader.dataset),
-            100. * batch_idx / len(train_loader), loss.item()))
-            train_losses.append(loss.item())
-            train_counter.append(
-            (batch_idx*1000) + ((epoch-1)*len(train_loader.dataset)))
-def test(test_loader, encoder, decoder):
-    loss_f= torch.nn.MSELoss()
-    test_losses = []
-    encoder.eval()
-    decoder.eval()
-    test_loss = 0
-    with torch.no_grad():
-        for data, target in test_loader:
-            encoded_data = encoder(data)
-            # Decode data
-            output= decoder(encoded_data)
-            test_loss += loss_f(output,data).item()
-    test_loss /= len(test_loader.dataset)
-    test_losses.append(test_loss)
-    print('\nTest set: Avg. loss: {:.4f} \n'.format(
-        test_loss))
-
-def short_cut(n_epochs, batch_size_train,batch_size_test):
-    train_loader = torch.utils.data.DataLoader(
-    torchvision.datasets.MNIST('./', train=True, download=False,
-                                transform=torchvision.transforms.Compose([
-                                torchvision.transforms.ToTensor(),
-                                torchvision.transforms.Normalize(
-                                    (0.1307,), (0.3081,))
-                                ])),batch_size=batch_size_train, shuffle=True)
-
-    test_loader = torch.utils.data.DataLoader(
-    torchvision.datasets.MNIST('./', train=False, download=False,
-                                transform=torchvision.transforms.Compose([
-                                torchvision.transforms.ToTensor(),
-                                torchvision.transforms.Normalize(
-                                    (0.1307,), (0.3081,))
-                                ])),batch_size=batch_size_test, shuffle=True)
-
-    encoder=Encoder(num_input_channels=1, base_channel_size=32, latent_dim=256)
-    decoder=Decoder(num_input_channels=1, base_channel_size=32, latent_dim=256)
-    mean = (0.1307, )
-    std = (0.3081, ) 
-    learning_rate = 0.01
-
-    params_to_optimize = [
-        {'params': encoder.parameters()},
-        {'params': decoder.parameters()}
-    ]
-    optimizer = torch.optim.Adam(params_to_optimize,lr=learning_rate)
-
-    for epoch in range(1, n_epochs + 1):
         train(epoch=epoch, train_loader=train_loader, optimizer=optimizer, encoder=encoder,decoder=decoder)
         test(train_loader=train_loader, encoder=encoder,decoder=decoder)      
         
@@ -385,8 +439,10 @@ def TrainVDM(batch_size_train=100, epoch=2):
 
 if __name__ == "__main__":
     # model
-    model = VariationalDiffusion(latent_dim=128, embedding_dim=32)
+    model = VariationalDiffusion(128, 128)
     # a random image 28x28x1
-    img = torch.randn(1, 1, 28, 28)
-    model(img)
-
+    img = torch.randn(50, 1, 28, 28)
+    losses = model(img)
+    # rescale diffusion loss
+    diff_loss = torch.mean(losses[2]) * (1. / (np.prod(img.shape[1:]) * np.log(2)))
+    print(diff_loss)
