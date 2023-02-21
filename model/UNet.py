@@ -320,7 +320,7 @@ class VariationalDiffusion(nn.Module):
     layers: int = 32
     gamma_min: float = -3.0
     gamma_max: float = 3.0
-    antithetic: bool = True
+    antithetic: bool = False
 
     def __init__(self, latent_dim, embedding_dim, n_blocks=32):
         super().__init__()
@@ -345,6 +345,7 @@ class VariationalDiffusion(nn.Module):
             t = np.mod(orig_t + np.arange(0., 1., step=1. / img.shape[0]), 1.0)
             # turn to float32
             t = t.to(torch.float32)
+            t = torch.reshape(t, (img.shape[0], 1))
         else:
             t = torch.rand((img.shape[0], 1))
 
@@ -371,7 +372,7 @@ if __name__ == "__main__":
     # model
     model = VariationalDiffusion(128, 128)
     # a random image 28x28x1
-    img = torch.randn(1, 1, 28, 28)
+    img = torch.randn(50, 1, 28, 28)
     losses = model(img)
     # rescale diffusion loss
     diff_loss = torch.mean(losses[2]) * (1. / (np.prod(img.shape[1:]) * np.log(2)))
