@@ -122,14 +122,15 @@ def recon_loss(img, enc_img, decoder: Decoder):
 ############################################################################################################
 # The timestep embedding is for the diffusion model to learn the temporal information of the time series
 def get_timestep_embedding(timesteps, embedding_dim):
-    timesteps *= 1000
+    t = timesteps
+    t = t * 1000
     half_dim = embedding_dim // 2
     emb = np.log(10000) / (half_dim - 1)
     emb = np.exp(np.arange(half_dim) * -emb)
-    emb = np.outer(timesteps, emb)
+    emb = np.outer(t, emb)
     emb = np.concatenate([np.sin(emb), np.cos(emb)], axis=1)
 
-    assert emb.shape == (timesteps.shape[0], embedding_dim)
+    assert emb.shape == (t.shape[0], embedding_dim)
     return torch.from_numpy(emb).float()
 
 
@@ -290,7 +291,7 @@ def short_cut(n_epochs, batch_size_train, batch_size_test):
         test(train_loader=train_loader, encoder=encoder, decoder=decoder)
 
 
-def diffusion_loss(z_0, t, score_net, conditioning):
+def diffusion_loss(z_0, t, score_net, conditioning, timesteps):
     # z_0 is the initial latent variable
     # t is the time step (time steps need to be discrete)
     # z_t is the latent variable at time t
@@ -306,12 +307,12 @@ def diffusion_loss(z_0, t, score_net, conditioning):
     loss_diff_mse = torch.sum((torch.square(eps - score)), dim=-1)
 
     # The diffusion process is a stochastic process
-    T = len(t)
+    T = timesteps
     s = t - (1. / T)
     g_s = gamma(s)
     loss_diff = .5 * T * np.expm1(g_s - gamma_x) * loss_diff_mse
 
-    return -1 * loss_diff
+    return loss_diff
 
 
 class VariationalDiffusion(nn.Module):
@@ -319,6 +320,7 @@ class VariationalDiffusion(nn.Module):
     layers: int = 32
     gamma_min: float = -3.0
     gamma_max: float = 3.0
+    antithetic: bool = True
 
     def __init__(self, latent_dim, embedding_dim, n_blocks=32):
         super().__init__()
@@ -338,10 +340,17 @@ class VariationalDiffusion(nn.Module):
 
         # diffusion loss
         # we need to sample time steps
-        t = torch.rand((z_0.shape[0], 1))
+        if self.antithetic:
+            orig_t = torch.rand(1)
+            t = np.mod(orig_t + np.arange(0., 1., step=1. / img.shape[0]), 1.0)
+            # turn to float32
+            t = t.to(torch.float32)
+        else:
+            t = torch.rand((img.shape[0], 1))
+
         # discretize time steps
         t = np.ceil(t * self.timesteps) / self.timesteps
-        loss_diff = diffusion_loss(z_0, t, self.score_net, conditioning)
+        loss_diff = diffusion_loss(z_0, t, self.score_net, conditioning, self.timesteps)
         return loss_recon, loss_latent, loss_diff
 
     def sample(self, z, t, conditioning, num_samples=1):
@@ -362,8 +371,8 @@ if __name__ == "__main__":
     # model
     model = VariationalDiffusion(128, 128)
     # a random image 28x28x1
-    img = torch.randn(5, 1, 28, 28)
+    img = torch.randn(1, 1, 28, 28)
     losses = model(img)
     # rescale diffusion loss
-    diff_loss = torch.mean(losses[2]) / (np.prod(img.shape[1:]) * np.log(2))
+    diff_loss = torch.mean(losses[2]) * (1. / (np.prod(img.shape[1:]) * np.log(2)))
     print(diff_loss)
