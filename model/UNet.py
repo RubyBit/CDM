@@ -389,6 +389,7 @@ class VariationalDiffusion(nn.Module):
         z0_rescaled = diffused / np.sqrt(1.0 - var0)
         reconstructed= self.decode(z0_rescaled )
         return reconstructed
+    
 def TrainVDM(batch_size_train, n_epochs):
     
     train_loader = torch.utils.data.DataLoader(
