@@ -14,7 +14,7 @@ import torch.nn.functional as F
 import torchvision
 import numpy as np
 from torchvision import transforms
-import matplotlib.pyplot as plt;
+
 
 # https://uvadlc-notebooks.readthedocs.io/en/latest/tutorial_notebooks/tutorial9/AE_CIFAR10.html
 
@@ -354,77 +354,98 @@ class VariationalDiffusion(nn.Module):
         loss_diff = diffusion_loss(z_0, t, self.score_net, conditioning, self.timesteps)
         return loss_recon, loss_latent, loss_diff
 
-    def sample(self, z, t, conditioning, num_samples=1):
-        eps = torch.randn((num_samples, self.latent_dim))
-        gamma_x = gamma(t)
-        z_t = variance_map(eps, gamma_x, eps)
-        score = self.score_net(z_t, t, conditioning)
-        return z_t + score
+    def sample(self, z_t, step, timesteps, conditioning, guidance_weight=0.):
+        eps = torch.randn_like(z_t)
+        t = (timesteps - step) / timesteps
+        s = (timesteps - step - 1) / timesteps
+
+        g_s = gamma(s)
+        g_t = gamma(t)
+
+        cond = conditioning if conditioning is not None else torch.zeros_like(z_t)
+
+        eps_hat_cond = self.score_net(z_t, g_t * torch.ones(z_t.shape[0]), cond)
+
+        eps_hat_uncond = self.score_net(z_t, g_t * torch.ones(z_t.shape[0]), torch.zeros_like(z_t))
+
+        eps_hat = (1. + guidance_weight) * eps_hat_cond - guidance_weight * eps_hat_uncond
+        a = torch.sigmoid(torch.tensor(g_s))
+        b = torch.sigmoid(torch.tensor(g_t))
+        c = -np.expm1(g_t - g_s)
+        sigma_t = torch.sqrt(sigma2(g_t))
+        z_s = torch.sqrt(a/b) * (z_t - sigma_t * c * eps_hat) + np.sqrt((1. - a) * c) * eps
+        return z_s
 
     def sample_from_prior(self, t, num_samples=1):
         return self.sample(t, conditioning=torch.zeros((num_samples, 0)), num_samples=num_samples)
 
     def sample_from_posterior(self, t, conditioning, num_samples=1):
         return self.sample(t, conditioning=conditioning, num_samples=num_samples)
-    
-    def recon(self,timesteps,t,conditioning, num_samples=1):
+
+    def recon(self, img, timesteps, t, conditioning, num_samples=1):
         z_0 = self.encoder(img)
         T = timesteps
         t_n = np.ceil(t * T)
         t = t_n / T
         g_t = gamma(t)
-        eps =torch.randn((num_samples, self.latent_dim))
+        eps = torch.randn(img.shape[0], self.latent_dim)
         # not sure about difference between
         # rng_body = jax.random.fold_in(rng, i)
         # eps = random.normal(rng_body, z_t.shape)
         # and this
         # rng, spl = random.split(rng)
-        z_t = variance_map(enc_img=z_0, g_0=g_t, eps_0=eps)
-        diffused=z_t
+        z_t = variance_map(z_0, g_t, eps)
+        diffused = z_t
         for t in range((T - t_n).astype('int'), self.timesteps):
-            diffused= sample(self, diffused, t, conditioning)
-            
+            diffused = self.sample(diffused, t, T, conditioning)
+
         g0 = gamma(0.0)
         var0 = sigma2(g0)
         z0_rescaled = diffused / np.sqrt(1.0 - var0)
-        reconstructed= self.decode(z0_rescaled )
+        reconstructed = self.decoder(z0_rescaled)
         return reconstructed
+
+
 def TrainVDM(batch_size_train, n_epochs):
-    
     train_loader = torch.utils.data.DataLoader(
-    torchvision.datasets.MNIST('../', train=True, download=False,
-                                transform=torchvision.transforms.Compose([
-                                torchvision.transforms.ToTensor()
-                                ])),batch_size=batch_size_train, shuffle=True)
+        torchvision.datasets.MNIST('../', train=True, download=False,
+                                   transform=torchvision.transforms.Compose([
+                                       torchvision.transforms.ToTensor()
+                                   ])), batch_size=batch_size_train, shuffle=True)
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-    model=VariationalDiffusion(256, 256).to(device)    
+    model = VariationalDiffusion(256, 256).to(device)
     model.train()
-    log_interval=50
+    log_interval = 50
     train_losses = []
     train_counter = []
-    logs={}
+    logs = {}
     optimizer = torch.optim.AdamW(model.parameters(), lr=0.008, weight_decay=1e-4)
     for epoch in range(1, n_epochs + 1):
         for batch_idx, (data, target) in enumerate(train_loader):
-            
+
             optimizer.zero_grad()
             loss, values, IMG = model(data)
             loss.backward()
             optimizer.step()
-            plt.plot(train_losses)
+            #plt.plot(train_losses)
             if batch_idx % log_interval == 0:
                 print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f},{}'.format(
-                epoch, batch_idx * len(data), len(train_loader.dataset),
-                100. * batch_idx / len(train_loader), loss.item(),values))
+                    epoch, batch_idx * len(data), len(train_loader.dataset),
+                           100. * batch_idx / len(train_loader), loss.item(), values))
                 train_losses.append(loss.item())
                 train_counter.append(
-                (batch_idx*1000) + ((epoch-1)*len(train_loader.dataset)))
+                    (batch_idx * 1000) + ((epoch - 1) * len(train_loader.dataset)))
+
+
 if __name__ == "__main__":
     # model
     model = VariationalDiffusion(128, 128)
     # a random image 28x28x1
-    img = torch.randn(50, 1, 28, 28)
+    img = torch.randn(512, 1, 28, 28)
     losses = model(img)
     # rescale diffusion loss
     diff_loss = torch.mean(losses[2]) * (1. / (np.prod(img.shape[1:]) * np.log(2)))
     print(diff_loss)
+
+    output = model.recon(img, 100, 0.8, None, 1)
+    print(output)
