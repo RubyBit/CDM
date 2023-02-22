@@ -14,7 +14,7 @@ import torch.nn.functional as F
 import torchvision
 import numpy as np
 from torchvision import transforms
-
+import matplotlib.pyplot as plt;
 
 # https://uvadlc-notebooks.readthedocs.io/en/latest/tutorial_notebooks/tutorial9/AE_CIFAR10.html
 
@@ -389,7 +389,36 @@ class VariationalDiffusion(nn.Module):
         z0_rescaled = diffused / np.sqrt(1.0 - var0)
         reconstructed= self.decode(z0_rescaled )
         return reconstructed
-
+def TrainVDM(batch_size_train, n_epochs):
+    
+    train_loader = torch.utils.data.DataLoader(
+    torchvision.datasets.MNIST('../', train=True, download=False,
+                                transform=torchvision.transforms.Compose([
+                                torchvision.transforms.ToTensor()
+                                ])),batch_size=batch_size_train, shuffle=True)
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    model=VariationalDiffusion(256, 256).to(device)    
+    model.train()
+    log_interval=50
+    train_losses = []
+    train_counter = []
+    logs={}
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.008, weight_decay=1e-4)
+    for epoch in range(1, n_epochs + 1):
+        for batch_idx, (data, target) in enumerate(train_loader):
+            
+            optimizer.zero_grad()
+            loss, values, IMG = model(data)
+            loss.backward()
+            optimizer.step()
+            plt.plot(train_losses)
+            if batch_idx % log_interval == 0:
+                print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f},{}'.format(
+                epoch, batch_idx * len(data), len(train_loader.dataset),
+                100. * batch_idx / len(train_loader), loss.item(),values))
+                train_losses.append(loss.item())
+                train_counter.append(
+                (batch_idx*1000) + ((epoch-1)*len(train_loader.dataset)))
 if __name__ == "__main__":
     # model
     model = VariationalDiffusion(128, 128)
