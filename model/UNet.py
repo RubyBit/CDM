@@ -95,7 +95,7 @@ def autoencoder_loss(x, x_hat):
     return F.binary_cross_entropy(x_hat, x)  # For MNIST dataset (or log prob if we get distributions)
 
 
-# Latent loss
+# Latent lossr
 def latent_loss(x_hat):
     var_1 = sigma2(gamma(1.0))
     mean_sqr = (1. - var_1) * torch.square(x_hat)
@@ -112,8 +112,6 @@ def recon_loss(img, enc_img, decoder: Decoder):
     z_0_rescaled = z_0 / alpha(g_0)
     # decode
     decoded_img = decoder(z_0_rescaled)
-    # make sure decoded_img is positive (change tensor sign)
-    decoded_img = torch.where(decoded_img < 0, -decoded_img, decoded_img)  # this might be a bottleneck
     # make sure decoded_img is positive (change tensor sign)
     decoded_img = torch.where(decoded_img < 0, -decoded_img, decoded_img)  # this might be a bottleneck
     return autoencoder_loss(img, decoded_img)
@@ -157,23 +155,14 @@ def variance_map(x, gamma_x, eps):
 class ResNet(nn.Module):
     # Residual network
     def __init__(self, latent_dim, embed_dim, num_blocks=4, num_layers=10, activation=nn.ReLU, norm=nn.LayerNorm):
-    # Residual network
-    def __init__(self, latent_dim, embed_dim, num_blocks=4, num_layers=10, activation=nn.ReLU, norm=nn.LayerNorm):
         super().__init__()
-        self.latent_dim = latent_dim
-        self.embed_dim = embed_dim
         self.latent_dim = latent_dim
         self.embed_dim = embed_dim
         self.num_blocks = num_blocks
         self.num_layers = num_layers
         self.activation = activation
         self.norm = norm
-        self.activation = activation
-        self.norm = norm
 
-        self.blocks = nn.ModuleList()
-        for _ in range(self.num_layers):
-            self.blocks.append(self._make_block())
         self.blocks = nn.ModuleList()
         for _ in range(self.num_layers):
             self.blocks.append(self._make_block())
@@ -181,23 +170,13 @@ class ResNet(nn.Module):
     def _make_block(self):
         # without convolutional layers
         layers = [self.norm([self.latent_dim]), self.activation(), nn.Linear(self.latent_dim, self.embed_dim)]
-        # without convolutional layers
-        layers = [self.norm([self.latent_dim]), self.activation(), nn.Linear(self.latent_dim, self.embed_dim)]
         return nn.Sequential(*layers)
 
     def forward(self, x, cond):
         z = x
-    def forward(self, x, cond):
-        z = x
         for block in self.blocks:
             h = block(z)
-            h = block(z)
             if cond is not None:
-                h = h + nn.Linear(cond.shape[1], self.embed_dim, bias=False)(cond)
-            h = self.activation()(self.norm([self.embed_dim])(h))
-            h = nn.Linear(self.embed_dim, self.latent_dim)(h)
-        z = z + h
-        return z
                 h = h + nn.Linear(cond.shape[1], self.embed_dim, bias=False)(cond)
             h = self.activation()(self.norm([self.embed_dim])(h))
             h = nn.Linear(self.embed_dim, self.latent_dim)(h)
@@ -212,14 +191,9 @@ class ScoreNet(nn.Module):
         self.latent_dim = latent_dim
         self.embedding_dim = embedding_dim
         self.resnet = ResNet(self.embedding_dim, self.embedding_dim * 2)
-        self.resnet = ResNet(self.embedding_dim, self.embedding_dim * 2)
 
     def forward(self, x, t, conditioning):
         timestep = get_timestep_embedding(t, self.embedding_dim)
-        # assert conditioning.shape[0]==timestep.shape[0] #as the output of encoder is (1, encoded_dim) this condition must eb satisfied
-        cond = timestep  # cond = torch.cat((timestep, conditioning), dim=1)
-
-        cond = nn.SiLU()(nn.Linear(self.embedding_dim, self.embedding_dim * 4)(cond))
         # assert conditioning.shape[0]==timestep.shape[0] #as the output of encoder is (1, encoded_dim) this condition must eb satisfied
         cond = timestep  # cond = torch.cat((timestep, conditioning), dim=1)
 
@@ -228,21 +202,10 @@ class ScoreNet(nn.Module):
         cond = nn.Linear(self.embedding_dim * 4, self.embedding_dim)(cond)
 
         h = nn.Linear(self.latent_dim, self.embedding_dim)(x)  # hardcoded but should be latent_dim
-        #h = torch.reshape(h, (1, 32, 1, 1))  # Reshaped for convolutional layers  # hardcoded but should be latent_dim
         # h = torch.reshape(h, (1, 32, 1, 1))  # Reshaped for convolutional layers
         h = self.resnet(h, cond)
         return x + h
 
-
-    def generate_x(self, z_0,latent_dim=latent_dim,embedding_dim=embedding_dim):
-        g_0 =ScoreNet(latent_dim,embedding_dim)(0.0)
-
-        var_0 = nn.sigmoid(g_0)
-        z_0_rescaled = z_0 / np.sqrt(1. - var_0)
-
-        logits = self.encdec.decode(z_0_rescaled, g_0) # should this be changed?
-
-        # get output samples
 
 ################################################
 
@@ -403,39 +366,29 @@ class VariationalDiffusion(nn.Module):
 
     def sample_from_posterior(self, t, conditioning, num_samples=1):
         return self.sample(t, conditioning=conditioning, num_samples=num_samples)
-
-        train(epoch=epoch, train_loader=train_loader, optimizer=optimizer, encoder=encoder,decoder=decoder)
-        test(train_loader=train_loader, encoder=encoder,decoder=decoder)      
-        
-        
-def TrainVDM(batch_size_train=100, epoch=2):
     
-    train_loader = torch.utils.data.DataLoader(
-    torchvision.datasets.MNIST('./', train=True, download=False,
-                                transform=torchvision.transforms.Compose([
-                                torchvision.transforms.ToTensor(),
-                                torchvision.transforms.Normalize(
-                                    (0.1307,), (0.3081,))
-                                ])),batch_size=batch_size_train, shuffle=True)
-    model=VariationalDiffusion(128, 32)
-    model.train()
-    log_interval=50
-    train_losses = []
-    train_counter = []
-    loss_f= torch.nn.MSELoss()
-    for batch_idx, (data, target) in enumerate(train_loader):
-        optimizer = torch.optim.Adam(model.parameters(), lr=0.1)
-        optimizer.zero_grad()
-        output, loss = model(data)
-        loss.backward()
-        optimizer.step()
-        if batch_idx % log_interval == 0:
-            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
-            epoch, batch_idx * len(data), len(train_loader.dataset),
-            100. * batch_idx / len(train_loader), loss.item()))
-            train_losses.append(loss.item())
-            train_counter.append(
-            (batch_idx*1000) + ((epoch-1)*len(train_loader.dataset)))
+    def recon(self,timesteps,t,conditioning, num_samples=1):
+        z_0 = self.encoder(img)
+        T = timesteps
+        t_n = np.ceil(t * T)
+        t = t_n / T
+        g_t = gamma(t)
+        eps =torch.randn((num_samples, self.latent_dim))
+        # not sure about difference between
+        # rng_body = jax.random.fold_in(rng, i)
+        # eps = random.normal(rng_body, z_t.shape)
+        # and this
+        # rng, spl = random.split(rng)
+        z_t = variance_map(enc_img=z_0, g_0=g_t, eps_0=eps)
+        diffused=z_t
+        for t in range((T - t_n).astype('int'), self.timesteps):
+            diffused= sample(self, diffused, t, conditioning)
+            
+        g0 = gamma(0.0)
+        var0 = sigma2(g0)
+        z0_rescaled = diffused / np.sqrt(1.0 - var0)
+        reconstructed= self.decode(z0_rescaled )
+        return reconstructed
 
 if __name__ == "__main__":
     # model
