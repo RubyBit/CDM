@@ -20,82 +20,45 @@ from torchvision import transforms
 
 class Encoder(nn.Module):
 
-    def __init__(self,
-                 num_input_channels: int,
-                 base_channel_size: int,
-                 latent_dim: int):
+    def __init__(self, z_dim=128, hidden_size=256, n_layers=3):
         super().__init__()
-        c_hid = base_channel_size
-        self.net = nn.Sequential(
-            nn.Conv2d(num_input_channels, c_hid, kernel_size=3, padding=1, stride=2),
-            nn.GELU(),
-            nn.Conv2d(c_hid, c_hid, kernel_size=3, padding=1),
-            nn.GELU(),
-            nn.Conv2d(c_hid, 2 * c_hid, kernel_size=3, padding=1, stride=2),
-            nn.GELU(),
-            nn.Conv2d(2 * c_hid, 2 * c_hid, kernel_size=3, padding=1),
-            nn.GELU(),
-            nn.Conv2d(2 * c_hid, 2 * c_hid, kernel_size=3, padding=1, stride=2),
-            nn.GELU(),
-            nn.Flatten(),
-            nn.Linear(2 * 16 * c_hid, latent_dim)
-        )
+        self.z_dim = z_dim
+        self.hidden_size = hidden_size
+        self.n_layers = n_layers
+        self.resnet = ResNet(embed_dim=hidden_size, num_layers=n_layers)
 
     def forward(self, x):
-        return self.net(x)
+        img = 2 * x - 1.0
+        # reshape img to combine last 3 dimensions
+        img = img.reshape(img.shape[0], -1)
+        # encode
+        img = torch.nn.Linear(img.shape[1], self.hidden_size)(img)
+        img = self.resnet(img, None)
+        weights = torch.nn.Linear(self.hidden_size, self.z_dim)(img)
+        return weights
 
 
 class Decoder(nn.Module):
 
-    def __init__(self,
-                 num_input_channels: int,
-                 base_channel_size: int,
-                 latent_dim: int):
+    def __init__(self, hidden_size=512, n_layers=3):
         super().__init__()
-        c_hid = base_channel_size
-        self.linear = nn.Sequential(
-            nn.Linear(latent_dim, 2 * 16 * c_hid),
-            nn.GELU()
-        )
-        self.net = nn.Sequential(
-            nn.ConvTranspose2d(2 * c_hid, 2 * c_hid, kernel_size=3, output_padding=1, padding=1, stride=2),
-            nn.GELU(),
-            nn.Conv2d(2 * c_hid, 2 * c_hid, kernel_size=3, padding=1),
-            nn.GELU(),
-            nn.ConvTranspose2d(2 * c_hid, c_hid, kernel_size=3, output_padding=1, padding=1, stride=2),
-            nn.GELU(),
-            nn.Conv2d(c_hid, c_hid, kernel_size=3, padding=0),
-            nn.GELU(),
-            nn.ConvTranspose2d(c_hid, num_input_channels, kernel_size=3, output_padding=1, padding=1, stride=2),
-            nn.Tanh()
-        )
+        self.hidden_size = hidden_size
+        self.n_layers = n_layers
+        self.resnet = ResNet(embed_dim=hidden_size, num_layers=n_layers)
 
     def forward(self, x):
         x = x.to(torch.float32)  # because linear layer expects float32
-        x = self.linear(x)
-        x = x.reshape(x.shape[0], -1, 4, 4)
-        x = self.net(x)
-        return x
+        x = nn.Linear(x.shape[1], self.hidden_size)(x)
+        x = self.resnet(x, None)
+
+        # return a distribution (make x all positive)
+        logits = nn.Linear(self.hidden_size, 28 * 28 * 1)(x)
+        # reshape
+        logits = logits.reshape(logits.shape[0], 1, 28, 28)
+        return torch.distributions.independent.Independent(torch.distributions.Bernoulli(logits=logits), 3)
 
 
-"""
-encoder = Encoder(num_input_channels=1, base_channel_size=32, latent_dim=256)
-# input image
-x = torch.randn(10000, 1, 28, 28)
-encoder(x).shape
-decoder = Decoder(num_input_channels=1, base_channel_size=32, latent_dim=256)
-# input image
-x = torch.randn(1000, 256)
-decoder(x).shape
-"""
-
-
-# Measures the reconstruction loss from the encoding the image to latent space and then decoding it back to the image
-def autoencoder_loss(x, x_hat):
-    return F.binary_cross_entropy(x_hat, x)  # For MNIST dataset (or log prob if we get distributions)
-
-
-# Latent lossr
+# Latent loss
 def latent_loss(x_hat):
     var_1 = sigma2(gamma(1.0))
     mean_sqr = (1. - var_1) * torch.square(x_hat)
@@ -104,17 +67,19 @@ def latent_loss(x_hat):
 
 
 def recon_loss(img, enc_img, decoder: Decoder):
-    g_0 = gamma(0)
+    g_0 = gamma(0.)
     # numpy normal distribution
-    eps_0 = np.random.normal(size=enc_img.size())
+    eps_0 = torch.normal(0, 1, size=enc_img.shape)
     z_0 = variance_map(enc_img, g_0, eps_0)
     # rescale
     z_0_rescaled = z_0 / alpha(g_0)
     # decode
     decoded_img = decoder(z_0_rescaled)
-    # make sure decoded_img is positive (change tensor sign)
-    decoded_img = torch.where(decoded_img < 0, -decoded_img, decoded_img)  # this might be a bottleneck
-    return autoencoder_loss(img, decoded_img)
+    # loss
+    # convert img from numpy
+    img_int = img.round()
+    loss = decoded_img.log_prob(img_int)
+    return -loss
 
 
 ############################################################################################################
@@ -127,15 +92,20 @@ def get_timestep_embedding(timesteps, embedding_dim):
     half_dim = embedding_dim // 2
     emb = np.log(10000) / (half_dim - 1)
     emb = np.exp(np.arange(half_dim) * -emb)
-    emb = np.outer(t, emb)
+    emb = t[:, None] * emb[None, :]
     emb = np.concatenate([np.sin(emb), np.cos(emb)], axis=1)
+    if embedding_dim % 2 == 1:  # pad
+        emb = np.pad(emb, [(0, 0, 0), (0, 1, 0)], mode='constant')
 
+    # combine last 2 dimensions
+    emb = emb.reshape(emb.shape[0], -1)
     assert emb.shape == (t.shape[0], embedding_dim)
+
     return torch.from_numpy(emb).float()
 
 
 # Forward diffusion process functions
-def gamma(ts, gamma_min=-6, gamma_max=6):
+def gamma(ts, gamma_min=-5.0, gamma_max=1.0):
     return gamma_max + (gamma_min - gamma_max) * ts
 
 
@@ -154,9 +124,8 @@ def variance_map(x, gamma_x, eps):
 
 class ResNet(nn.Module):
     # Residual network
-    def __init__(self, latent_dim, embed_dim, num_layers=10, activation=nn.ReLU, norm=nn.LayerNorm):
+    def __init__(self, embed_dim, num_layers=10, activation=nn.ReLU, norm=nn.LayerNorm):
         super().__init__()
-        self.latent_dim = latent_dim
         self.embed_dim = embed_dim
         self.num_layers = num_layers
         self.activation = activation
@@ -168,7 +137,7 @@ class ResNet(nn.Module):
 
     def _make_block(self):
         # without convolutional layers
-        layers = [self.norm([self.latent_dim]), self.activation(), nn.Linear(self.latent_dim, self.embed_dim)]
+        layers = [self.norm([self.embed_dim]), self.activation(), nn.Linear(self.embed_dim, 1024)]
         return nn.Sequential(*layers)
 
     def forward(self, x, cond):
@@ -176,9 +145,9 @@ class ResNet(nn.Module):
         for block in self.blocks:
             h = block(z)
             if cond is not None:
-                h = h + nn.Linear(cond.shape[1], self.embed_dim, bias=False)(cond)
-            h = self.activation()(self.norm([self.embed_dim])(h))
-            h = nn.Linear(self.embed_dim, self.latent_dim)(h)
+                h = h + nn.Linear(cond.shape[1], 1024, bias=False)(cond)
+            h = self.activation()(self.norm([1024])(h))
+            h = nn.Linear(1024, self.embed_dim)(h)
         z = z + h
         return z
 
@@ -189,7 +158,7 @@ class ScoreNet(nn.Module):
         super().__init__()
         self.latent_dim = latent_dim
         self.embedding_dim = embedding_dim
-        self.resnet = ResNet(self.embedding_dim, self.embedding_dim * 2, num_layers=n_blocks)
+        self.resnet = ResNet(embedding_dim, num_layers=n_blocks)
 
     def forward(self, x, t, conditioning):
         timestep = get_timestep_embedding(t, self.embedding_dim)
@@ -319,15 +288,17 @@ class VariationalDiffusion(nn.Module):
     layers: int = 32
     gamma_min: float = -3.0
     gamma_max: float = 3.0
-    antithetic: bool = False
+    antithetic: bool = True
+    classes: int = 10 + 26 + 26 + 1  # 10 digits + 26 lowercase + 26 uppercase
 
     def __init__(self, latent_dim, embedding_dim, n_blocks=32):
         super().__init__()
         self.latent_dim = latent_dim
         self.embedding_dim = embedding_dim
         self.score_net = ScoreNet(self.latent_dim, self.embedding_dim, n_blocks=n_blocks)
-        self.encoder = Encoder(1, 32, 128)
-        self.decoder = Decoder(1, 32, 128)
+        self.encoder = Encoder(z_dim=embedding_dim)
+        self.decoder = Decoder()
+        # self.embedding_vectors = nn.Embedding(self.classes, self.embedding_dim)
 
     def forward(self, img, conditioning=None):  # combined loss for diffusion and reconstruction
         # encoding image
@@ -372,7 +343,7 @@ class VariationalDiffusion(nn.Module):
         b = torch.sigmoid(torch.tensor(g_t))
         c = -np.expm1(g_t - g_s)
         sigma_t = torch.sqrt(sigma2(g_t))
-        z_s = torch.sqrt(a/b) * (z_t - sigma_t * c * eps_hat) + np.sqrt((1. - a) * c) * eps
+        z_s = torch.sqrt(a / b) * (z_t - sigma_t * c * eps_hat) + np.sqrt((1. - a) * c) * eps
         return z_s
 
     def sample_from_prior(self, t, num_samples=1):
@@ -402,7 +373,7 @@ class VariationalDiffusion(nn.Module):
         var0 = sigma2(g0)
         z0_rescaled = diffused / np.sqrt(1.0 - var0)
         reconstructed = self.decoder(z0_rescaled)
-        return reconstructed
+        return reconstructed.mean
 
 
 def TrainVDM(batch_size_train, n_epochs):
@@ -426,7 +397,7 @@ def TrainVDM(batch_size_train, n_epochs):
             loss, values, IMG = model(data)
             loss.backward()
             optimizer.step()
-            #plt.plot(train_losses)
+            # plt.plot(train_losses)
             if batch_idx % log_interval == 0:
                 print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f},{}'.format(
                     epoch, batch_idx * len(data), len(train_loader.dataset),
@@ -438,13 +409,13 @@ def TrainVDM(batch_size_train, n_epochs):
 
 if __name__ == "__main__":
     # model
-    model = VariationalDiffusion(128, 128, 4)
-    # a random image 28x28x1
-    img = torch.randn(512, 1, 28, 28)
+    model = VariationalDiffusion(32, 32, 4)
+    # a random image 28x28x1 in range [0,1]
+    img = torch.rand((512, 1, 28, 28))
     losses = model(img)
-    # rescale diffusion loss
-    diff_loss = torch.mean(losses[2]) * (1. / (np.prod(img.shape[1:]) * np.log(2)))
-    print(diff_loss)
+    # rescale losses
+    for i in losses:
+        print((i * (1. / (np.prod(img.shape[1:]) * np.log(2)))).mean())
 
     output = model.recon(img, 100, 0.8, None, 1)
     print(output)
