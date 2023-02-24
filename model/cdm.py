@@ -154,11 +154,10 @@ def variance_map(x, gamma_x, eps):
 
 class ResNet(nn.Module):
     # Residual network
-    def __init__(self, latent_dim, embed_dim, num_blocks=4, num_layers=10, activation=nn.ReLU, norm=nn.LayerNorm):
+    def __init__(self, latent_dim, embed_dim, num_layers=10, activation=nn.ReLU, norm=nn.LayerNorm):
         super().__init__()
         self.latent_dim = latent_dim
         self.embed_dim = embed_dim
-        self.num_blocks = num_blocks
         self.num_layers = num_layers
         self.activation = activation
         self.norm = norm
@@ -190,7 +189,7 @@ class ScoreNet(nn.Module):
         super().__init__()
         self.latent_dim = latent_dim
         self.embedding_dim = embedding_dim
-        self.resnet = ResNet(self.embedding_dim, self.embedding_dim * 2)
+        self.resnet = ResNet(self.embedding_dim, self.embedding_dim * 2, num_layers=n_blocks)
 
     def forward(self, x, t, conditioning):
         timestep = get_timestep_embedding(t, self.embedding_dim)
@@ -413,7 +412,7 @@ def TrainVDM(batch_size_train, n_epochs):
                                        torchvision.transforms.ToTensor()
                                    ])), batch_size=batch_size_train, shuffle=True)
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-    model = VariationalDiffusion(256, 256).to(device)
+    model = VariationalDiffusion(128, 128).to(device)
     model.train()
     log_interval = 50
     train_losses = []
@@ -439,7 +438,7 @@ def TrainVDM(batch_size_train, n_epochs):
 
 if __name__ == "__main__":
     # model
-    model = VariationalDiffusion(128, 128)
+    model = VariationalDiffusion(128, 128, 4)
     # a random image 28x28x1
     img = torch.randn(512, 1, 28, 28)
     losses = model(img)
