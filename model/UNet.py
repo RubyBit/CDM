@@ -354,12 +354,27 @@ class VariationalDiffusion(nn.Module):
         loss_diff = diffusion_loss(z_0, t, self.score_net, conditioning, self.timesteps)
         return loss_recon, loss_latent, loss_diff
 
-    def sample(self, z, t, conditioning, num_samples=1):
-        eps = torch.randn((num_samples, self.latent_dim))
-        gamma_x = gamma(t)
-        z_t = variance_map(eps, gamma_x, eps)
-        score = self.score_net(z_t, t, conditioning)
-        return z_t + score
+    def sample(self, z_t, step, timesteps, conditioning, guidance_weight=0.):
+        eps = torch.randn_like(z_t)
+        t = (timesteps - step) / timesteps
+        s = (timesteps - step - 1) / timesteps
+
+        g_s = gamma(s)
+        g_t = gamma(t)
+
+        cond = conditioning if conditioning is not None else torch.zeros_like(z_t)
+
+        eps_hat_cond = self.score_net(z_t, g_t * torch.ones(z_t.shape[0]), cond)
+
+        eps_hat_uncond = self.score_net(z_t, g_t * torch.ones(z_t.shape[0]), torch.zeros_like(z_t))
+
+        eps_hat = (1. + guidance_weight) * eps_hat_cond - guidance_weight * eps_hat_uncond
+        a = torch.sigmoid(torch.tensor(g_s))
+        b = torch.sigmoid(torch.tensor(g_t))
+        c = -np.expm1(g_t - g_s)
+        sigma_t = torch.sqrt(sigma2(g_t))
+        z_s = torch.sqrt(a/b) * (z_t - sigma_t * c * eps_hat) + np.sqrt((1. - a) * c) * eps
+        return z_s
 
     def sample_from_prior(self, t, num_samples=1):
         return self.sample(t, conditioning=torch.zeros((num_samples, 0)), num_samples=num_samples)
