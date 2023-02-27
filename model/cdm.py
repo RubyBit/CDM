@@ -26,7 +26,7 @@ class Encoder(nn.Module):
         self.hidden_size = hidden_size
         self.n_layers = n_layers
         self.resnet = ResNet(embed_dim=hidden_size, middle_size=hidden_size, num_layers=n_layers)
-        self.dense1 = torch.nn.Linear(28*28, self.hidden_size)
+        self.dense1 = torch.nn.Linear(28 * 28, self.hidden_size)
         self.dense2 = torch.nn.Linear(self.hidden_size, self.z_dim)
 
     def forward(self, x, cond=None):
@@ -49,7 +49,7 @@ class Decoder(nn.Module):
 
         self.dense1 = torch.nn.Linear(32, self.hidden_size)
         self.resnet = ResNet(embed_dim=hidden_size, middle_size=hidden_size, num_layers=n_layers)
-        self.dense2 = torch.nn.Linear(self.hidden_size, 28*28)
+        self.dense2 = torch.nn.Linear(self.hidden_size, 28 * 28)
 
     def forward(self, x, cond=None):
         x = x.to(torch.float32)  # because linear layer expects float32
@@ -145,7 +145,6 @@ class ResNet(nn.Module):
         self.last_block = nn.ModuleList([self.norm([self.middle_size]), self.activation(),
                                          nn.Linear(self.middle_size, self.embed_dim)])
 
-
     def _make_block(self):
         # without convolutional layers
         layers = [self.norm([self.embed_dim]), self.activation(), nn.Linear(self.embed_dim, self.middle_size)]
@@ -169,6 +168,10 @@ class ScoreNet(nn.Module):
         super().__init__()
         self.latent_dim = latent_dim
         self.embedding_dim = embedding_dim
+        self.dense1 = nn.Linear(64, self.embedding_dim * 2)
+        self.dense2 = nn.Linear(self.embedding_dim * 2, self.embedding_dim * 2)
+        self.dense3 = nn.Linear(self.embedding_dim * 2, self.embedding_dim)
+        self.dense4 = nn.Linear(self.latent_dim, self.embedding_dim)
         self.resnet = ResNet(embed_dim=embedding_dim, middle_size=embedding_dim, num_layers=n_blocks)
 
     def forward(self, x, t, conditioning):
@@ -176,12 +179,11 @@ class ScoreNet(nn.Module):
         # assert conditioning.shape[0]==timestep.shape[0] #as the output of encoder is (1, encoded_dim) this condition must eb satisfied
         cond = timestep
         cond = torch.cat((cond, conditioning), dim=1)
+        cond = nn.SiLU()(self.dense1(cond))
+        cond = nn.SiLU()(self.dense2(cond))
+        cond = self.dense3(cond)
 
-        cond = nn.SiLU()(nn.Linear(cond.shape[1], self.embedding_dim * 2)(cond))
-        cond = nn.SiLU()(nn.Linear(self.embedding_dim * 2, self.embedding_dim * 2)(cond))
-        cond = nn.Linear(self.embedding_dim * 2, self.embedding_dim)(cond)
-
-        h = nn.Linear(self.latent_dim, self.embedding_dim)(x)  # hardcoded but should be latent_dim
+        h = self.dense4(x)  # hardcoded but should be latent_dim
         # h = torch.reshape(h, (1, 32, 1, 1))  # Reshaped for convolutional layers
         h = self.resnet(h, cond)
         return x + h
@@ -301,7 +303,7 @@ class VariationalDiffusion(nn.Module):
     gamma_min: float = -3.0
     gamma_max: float = 3.0
     antithetic: bool = True
-    classes: int = 10 + 26 + 26 + 1  # 10 digits + 26 lowercase + 26 uppercase
+    classes: int = 10  # 10 digits
 
     def __init__(self, latent_dim, embedding_dim, n_blocks=32):
         super().__init__()
