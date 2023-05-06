@@ -168,9 +168,9 @@ class ScoreNet(nn.Module):
         super().__init__()
         self.latent_dim = latent_dim
         self.embedding_dim = embedding_dim
-        self.dense1 = nn.Linear(64, self.embedding_dim * 2)
-        self.dense2 = nn.Linear(self.embedding_dim * 2, self.embedding_dim * 2)
-        self.dense3 = nn.Linear(self.embedding_dim * 2, self.embedding_dim)
+        self.dense1 = nn.Linear(64, self.embedding_dim * 4)
+        self.dense2 = nn.Linear(self.embedding_dim * 4, self.embedding_dim * 4)
+        self.dense3 = nn.Linear(self.embedding_dim * 4, self.embedding_dim)
         self.dense4 = nn.Linear(self.latent_dim, self.embedding_dim)
         self.resnet = ResNet(embed_dim=embedding_dim, middle_size=embedding_dim, num_layers=n_blocks)
 
@@ -362,11 +362,28 @@ class VariationalDiffusion(nn.Module):
         z_s = torch.sqrt(a / b) * (z_t - sigma_t * c * eps_hat) + np.sqrt((1. - a) * c) * eps
         return z_s
 
-    def sample_from_prior(self, t, num_samples=1):
-        return self.sample(t, conditioning=torch.zeros((num_samples, 0)), num_samples=num_samples)
+    def q_mean_variance(self, img, conditioning):
+        cond = self.embedding_vectors(conditioning)
+        z_0 = self.encoder(img, cond)
+        # get variance
+        sigma_0 = torch.sqrt(sigma2(gamma(0.)))
+        # get log variance
+        log_sigma_0 = torch.log(sigma_0)
+        # get mean
+        mu_0 = z_0 / sigma_0
 
-    def sample_from_posterior(self, t, conditioning, num_samples=1):
-        return self.sample(t, conditioning=conditioning, num_samples=num_samples)
+        return mu_0, sigma_0, log_sigma_0
+
+    def p_mean_variance(self, z_t, t, timesteps):
+        z_s = self.sample(z_t, t, timesteps, torch.zeros_like(z_t))
+        # get variance
+        sigma_t = torch.sqrt(sigma2(gamma(t)))
+        # get log variance
+        log_sigma_t = torch.log(sigma_t)
+        # get mean
+        mu_t = z_s / sigma_t
+
+        return mu_t, sigma_t, log_sigma_t
 
     def recon(self, img, timesteps, t, conditioning, num_samples=1):
         cond = self.embedding_vectors(conditioning)
