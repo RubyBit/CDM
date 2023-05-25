@@ -1,7 +1,8 @@
 from functools import reduce
 
 import numpy as np
-from scipy.stats import norm, beta
+from scipy.stats import norm, beta, binom
+from scipy.special import gammaln
 
 # Range Asymmetrical Numeral System
 head_precision = 64
@@ -308,3 +309,116 @@ def non_uniforms_pop(precision, ppfs, cdfs):
         return state, np.asarray(symbols)
 
     return pop
+
+
+# ----------------------------------------------------------------------------
+# Functions for Bernoulli and categorical distributions
+# ----------------------------------------------------------------------------
+def create_categorical_buckets(probs, precision):
+    buckets = np.rint(probs * ((1 << precision) - len(probs))) + np.ones(probs.shape)
+    bucket_sum = sum(buckets)
+    if not bucket_sum == 1 << precision:
+        i = np.argmax(buckets)
+        buckets[i] += (1 << precision) - bucket_sum
+    assert sum(buckets) == 1 << precision
+    return np.insert(np.cumsum(buckets), 0, 0)  # this could be slightly wrong
+
+
+def categorical_cdf(probs, precision):
+    def cdf(s):
+        cumulative_buckets = create_categorical_buckets(probs, precision)
+        return int(cumulative_buckets[s])
+
+    return cdf
+
+
+def categorical_ppf(probs, precision):
+    def ppf(cf):
+        cumulative_buckets = create_categorical_buckets(probs, precision)
+        return np.searchsorted(cumulative_buckets, cf, 'right') - 1
+
+    return ppf
+
+
+def categoricals_append(probs, precision):
+    """Assume that the last dim of probs contains the probability vectors,
+    i.e. np.sum(probs, axis=-1) == ones"""
+    # Flatten all but last dim of probs
+    probs = np.reshape(probs, (-1, np.shape(probs)[-1]))
+    cdfs = [categorical_cdf(p, precision) for p in probs]
+
+    def append(state, data):
+        data = np.ravel(data)
+        return non_uniforms_append(precision, cdfs)(state, data)
+
+    return append
+
+
+def categoricals_pop(probs, precision):
+    """Assume that the last dim of probs contains the probability vectors,
+    i.e. np.sum(probs, axis=-1) == ones"""
+    # Flatten all but last dim of probs
+    data_shape = np.shape(probs)[:-1]
+    probs = np.reshape(probs, (-1, np.shape(probs)[-1]))
+    cdfs = [categorical_cdf(p, precision) for p in probs]
+    ppfs = [categorical_ppf(p, precision) for p in probs]
+
+    def pop(state):
+        state, symbols = non_uniforms_pop(precision, ppfs, cdfs)(state)
+        return state, np.reshape(symbols, data_shape)
+
+    return pop
+
+
+def bernoullis_append(probs, precision):
+    return categoricals_append(np.stack((1 - probs, probs), axis=-1), precision)
+
+
+def bernoullis_pop(probs, precision):
+    return categoricals_pop(np.stack((1 - probs, probs), axis=-1), precision)
+
+
+def binomial_cdf(n, p, precision):
+    def cdf(k):
+        return _nearest_int(binom.cdf(k - 1, n, p) * (1 << precision))
+
+    return cdf
+
+
+def binomial_ppf(n, p, precision):
+    def ppf(cf):
+        return np.int64(binom.ppf((cf + 0.5) / (1 << precision), n, p))
+
+    return ppf
+
+
+def beta_binomial_log_pdf(k, n, a, b):
+    a_plus_b = a + b
+    numer = (gammaln(n + 1) + gammaln(k + a) + gammaln(n - k + b)
+             + gammaln(a_plus_b))
+    denom = (gammaln(k + 1) + gammaln(n - k + 1) + gammaln(n + a_plus_b)
+             + gammaln(a) + gammaln(b))
+    return numer - denom
+
+
+def generate_beta_binomial_probs(a, b, n):
+    ks = np.arange(n + 1)
+    a = a[..., np.newaxis]
+    b = b[..., np.newaxis]
+    probs = np.exp(beta_binomial_log_pdf(ks, n, a, b))
+    # make sure normalised, there are some numerical
+    # issues with the exponentiation in the beta binomial
+    probs = np.clip(probs, 1e-10, 1.)
+    return probs / np.sum(probs, axis=-1, keepdims=True)
+
+
+def beta_binomials_append(a, b, n, precision):
+    # TODO: Implement this using bits-back instead of generic discrete distrn.
+    probs = generate_beta_binomial_probs(a, b, n)
+    return categoricals_append(probs, precision)
+
+
+def beta_binomials_pop(a, b, n, precision):
+    # TODO: Implement this using bits-back instead of generic discrete distrn.
+    probs = generate_beta_binomial_probs(a, b, n)
+    return categoricals_pop(probs, precision)

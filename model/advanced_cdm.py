@@ -1,6 +1,54 @@
+# dataclass config
+from dataclasses import dataclass
+from typing import Tuple
+
 import numpy as np
 import torch
 from torch import einsum, nn, pi, softmax
+
+
+# make dataclass config
+@dataclass
+class EncConfig:
+    in_channels_enc: int
+    out_channels_enc: int
+    condition_dim: int
+    norm_groups_enc: int
+
+
+@dataclass
+class DecConfig:
+    in_channels_dec: int
+    out_channels_dec: int
+    condition_dim: int
+    norm_groups_dec: int
+
+
+def autoencoder_loss(x, recon_x):
+    mse_loss = nn.MSELoss()(recon_x, x)
+    return mse_loss
+
+
+def config_ae_cifar() -> Tuple[EncConfig, DecConfig]:
+    cfg_enc = EncConfig(
+        in_channels_enc=3,
+        out_channels_enc=9,
+        condition_dim=64,
+        norm_groups_enc=3,
+    )
+    cfg_dec = DecConfig(
+        in_channels_dec=9,
+        out_channels_dec=3,
+        condition_dim=64,
+        norm_groups_dec=3,
+    )
+    return cfg_enc, cfg_dec
+
+
+def setup_ae_model(cfg_enc, cfg_dec):
+    encoder = Encoder(cfg_enc)
+    decoder = Decoder(cfg_dec)
+    return encoder, decoder
 
 
 # Encoder
@@ -8,10 +56,22 @@ class Encoder(nn.Module):
     def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg
-        pass
+        # ch_in,
+        # ch_out=None,
+        # condition_dim=None,
+        # dropout_prob=0.0,
+        # norm_groups=32,
+        self.resnet_block1 = ResnetBlock(ch_in=cfg.in_channels_enc, ch_out=cfg.out_channels_enc,
+                                         condition_dim=cfg.condition_dim, norm_groups=cfg.norm_groups_enc)
+        self.resnet_block2 = ResnetBlock(ch_in=cfg.out_channels_enc, ch_out=cfg.out_channels_enc,
+                                         condition_dim=cfg.condition_dim, norm_groups=cfg.norm_groups_enc)
+        self.downsample = nn.MaxPool2d(kernel_size=2, stride=2)
 
-    def forward(self, x):
-        pass
+    def forward(self, x, condition=None):
+        x = self.resnet_block1(x, condition)
+        x = self.downsample(x)
+        x = self.resnet_block2(x, condition)
+        return x
 
 
 # Decoder
@@ -19,10 +79,22 @@ class Decoder(nn.Module):
     def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg
-        pass
+        # ch_in,
+        # ch_out=None,
+        # condition_dim=None,
+        # dropout_prob=0.0,
+        # norm_groups=32,
+        self.resnet_block1 = ResnetBlock(ch_in=cfg.in_channels_dec, ch_out=cfg.out_channels_dec,
+                                         condition_dim=cfg.condition_dim, norm_groups=cfg.norm_groups_dec)
+        self.resnet_block2 = ResnetBlock(ch_in=cfg.out_channels_dec, ch_out=cfg.out_channels_dec,
+                                         condition_dim=cfg.condition_dim, norm_groups=cfg.norm_groups_dec)
+        self.upsample = nn.Upsample(scale_factor=2, mode='nearest')
 
-    def forward(self, z):
-        pass
+    def forward(self, z, condition=None):
+        z = self.resnet_block1(z, condition)
+        z = self.upsample(z)
+        z = self.resnet_block2(z, condition)
+        return z
 
 
 @torch.no_grad()
