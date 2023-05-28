@@ -149,7 +149,6 @@ class VDM(nn.Module):
         x = 2 * ((img_int + 0.5) / self.vocab_size - 0.5)
         return self.sample_q_t_0(x, 0.0)
 
-
     def forward(self, batch, *, noise=None):
         x, label = maybe_unpack_batch(batch)
         assert x.shape[1:] == self.image_shape
